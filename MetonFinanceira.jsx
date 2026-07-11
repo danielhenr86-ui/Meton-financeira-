@@ -9,7 +9,8 @@ import {
   Camera, Pencil, Search, ArrowLeftRight
 } from "lucide-react";
 import {
-  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend
+  BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
+  LineChart, Line
 } from "recharts";
 
 /* ============================================================
@@ -152,6 +153,30 @@ function looksLikeTransfer(desc) {
 function isTransfer(t) {
   if (typeof t.transfer === "boolean") return t.transfer;
   return looksLikeTransfer(t.desc);
+}
+
+/* ---------- meio de pagamento ---------- */
+
+function paymentMethod(desc) {
+  const nd = normalize(desc);
+  if (/\bpix\b/.test(nd)) return "Pix";
+  if (nd.includes("credito") || nd.includes("cartao de credito") || nd.includes("fatura")) return "Crédito";
+  if (nd.includes("debito") || nd.includes("cartao de debito")) return "Débito";
+  if (nd.includes("boleto")) return "Boleto";
+  if (nd.includes("ted") || nd.includes("doc") || nd.includes("transferencia")) return "TED/DOC";
+  if (nd.includes("saque") || nd.includes("dinheiro")) return "Dinheiro";
+  return "Outros";
+}
+
+/* ---------- provisão de parcelas ---------- */
+
+// total ainda a pagar/receber de uma conta parcelada (parcelas restantes)
+function remainingProvision(b) {
+  if (b.recur === "parcelado" && b.installments) {
+    const restantes = Math.max(0, b.installments - ((b.installmentIndex || 1) - 1));
+    return b.amount * restantes;
+  }
+  return b.amount;
 }
 
 /* ---------- helpers ---------- */
@@ -446,6 +471,54 @@ async function parsePhoto(file, onProgress) {
   }
 }
 
+/* ---------- gerador de PDF ---------- */
+
+let jspdfPromise = null;
+function loadJsPDF() {
+  if (typeof window !== "undefined" && window.jspdf) return Promise.resolve(window.jspdf);
+  if (jspdfPromise) return jspdfPromise;
+  jspdfPromise = new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+    s.onload = () => resolve(window.jspdf);
+    s.onerror = () => reject(new Error("Não foi possível carregar o gerador de PDF."));
+    document.head.appendChild(s);
+  });
+  return jspdfPromise;
+}
+
+// gera um PDF a partir de um texto (linhas) e retorna um Blob
+async function textToPdf(title, textLines) {
+  const { jsPDF } = await loadJsPDF();
+  const doc = new jsPDF({ unit: "pt", format: "a4" });
+  const margin = 40;
+  let y = margin;
+  doc.setFillColor(20, 83, 45);
+  doc.rect(0, 0, 595, 60, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text("Meton Financeira", margin, 38);
+  y = 90;
+  doc.setTextColor(30, 30, 30);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(13);
+  doc.text(title, margin, y);
+  y += 22;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10.5);
+  for (const raw of textLines) {
+    const line = String(raw).replace(/[*_]/g, "");
+    const wrapped = doc.splitTextToSize(line || " ", 595 - margin * 2);
+    for (const w of wrapped) {
+      if (y > 800) { doc.addPage(); y = margin; }
+      doc.text(w, margin, y);
+      y += 15;
+    }
+  }
+  return doc.output("blob");
+}
+
 /* ---------- dados de exemplo ---------- */
 
 function sampleData() {
@@ -507,6 +580,112 @@ function buildMonthStats(tx, mKey, catOf) {
   return { inn, out, result: inn - out, byWallet, cats, count: mTx.length };
 }
 
+/* ---------- relatório de período livre (para exportação) ---------- */
+
+function buildPeriodReport({ from, to, tx, bills, catOf, userName }) {
+  const inRange = (d) => d >= from && d <= to;
+  const rows = tx.filter((t) => inRange(t.date));
+  const flow = rows.filter((t) => !isTransfer(t));
+  const inn = flow.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+  const out = flow.filter((t) => t.amount < 0).reduce((s, t) => s - t.amount, 0);
+  const byWallet = {};
+  for (const w of ["PF", "PJ"]) {
+    const wt = rows.filter((t) => t.wallet === w);
+    byWallet[w] = {
+      in: wt.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0),
+      out: wt.filter((t) => t.amount < 0).reduce((s, t) => s - t.amount, 0),
+    };
+  }
+  const cats = {};
+  for (const t of flow) { if (t.amount < 0) { const c = catOf(t); cats[c] = (cats[c] || 0) - t.amount; } }
+  const topCats = Object.entries(cats).sort((a, b) => b[1] - a[1]);
+  const methods = {};
+  for (const t of rows) {
+    const m = paymentMethod(t.desc);
+    if (!methods[m]) methods[m] = { in: 0, out: 0 };
+    if (t.amount >= 0) methods[m].in += t.amount; else methods[m].out -= t.amount;
+  }
+
+  const fmt = (iso) => iso.split("-").reverse().join("/");
+  const lines = [
+    `RELATÓRIO POR PERÍODO`,
+    `De ${fmt(from)} a ${fmt(to)}`,
+    ``,
+    `RESULTADO`,
+    `Entradas: ${brl(inn)}`,
+    `Saídas: ${brl(out)}`,
+    `Resultado: ${brl(inn - out)}`,
+    `Lançamentos: ${rows.length}`,
+    ``,
+    `POR CARTEIRA`,
+    `PF: entrou ${brl(byWallet.PF.in)} · saiu ${brl(byWallet.PF.out)}`,
+    `PJ: entrou ${brl(byWallet.PJ.in)} · saiu ${brl(byWallet.PJ.out)}`,
+    ``,
+    `GASTOS POR CATEGORIA`,
+    ...topCats.map(([c, v]) => `- ${c}: ${brl(v)}`),
+    ``,
+    `POR MEIO DE PAGAMENTO`,
+    ...Object.entries(methods).map(([m, v]) => `- ${m}: entrou ${brl(v.in)} · saiu ${brl(v.out)}`),
+    ``,
+    `Gerado por ${userName} em ${todayISO().split("-").reverse().join("/")} — Meton Financeira`,
+    `Conteúdo educacional. Não constitui recomendação de investimento.`,
+  ];
+  return { inn, out, result: inn - out, count: rows.length, text: lines.join("\n") };
+}
+
+/* ---------- previsão de fluxo de caixa (retrospecto + contas futuras) ---------- */
+
+function buildForecast({ tx, bills, saldoTotal, wallet }) {
+  // fluxo médio mensal dos últimos 3 meses (ignora transferências)
+  const flow = tx.filter((t) => (wallet === "Tudo" ? !isTransfer(t) : t.wallet === wallet));
+  const now = new Date();
+  const keys = [];
+  for (let i = 1; i <= 3; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    keys.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  let ins = 0, outs = 0, n = 0;
+  for (const k of keys) {
+    const mt = flow.filter((t) => monthKey(t.date) === k);
+    if (!mt.length) continue;
+    ins += mt.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+    outs += mt.filter((t) => t.amount < 0).reduce((s, t) => s - t.amount, 0);
+    n++;
+  }
+  const avgIn = n ? ins / n : 0;
+  const avgOut = n ? outs / n : 0;
+  const avgNet = avgIn - avgOut; // saldo médio que sobra por mês
+
+  // contas a pagar/receber já cadastradas nos próximos 90 dias
+  const today = new Date(todayISO());
+  const horizons = [30, 60, 90];
+  const upcoming = bills.filter((b) => !b.paid).filter((b) => wallet === "Tudo" || b.wallet === wallet);
+  const proj = horizons.map((h) => {
+    const limit = new Date(today); limit.setDate(limit.getDate() + h);
+    let billsPay = 0, billsRecv = 0;
+    for (const b of upcoming) {
+      const due = new Date(b.dueDate);
+      if (due >= today && due <= limit) {
+        if (b.type === "pagar") billsPay += b.amount;
+        else billsRecv += b.amount;
+      }
+    }
+    // projeção = saldo atual + (fluxo médio proporcional aos meses) + contas conhecidas do período
+    const months = h / 30;
+    const projected = saldoTotal + avgNet * months + billsRecv - billsPay;
+    return { horizon: h, projected, billsPay, billsRecv };
+  });
+
+  // dia estimado em que o saldo zera, se o fluxo médio for negativo
+  let daysToZero = null;
+  if (avgNet < 0 && saldoTotal > 0) {
+    const dailyBurn = Math.abs(avgNet) / 30;
+    daysToZero = Math.round(saldoTotal / dailyBurn);
+  }
+
+  return { avgIn, avgOut, avgNet, proj, daysToZero, monthsUsed: n };
+}
+
 function buildReport({ mKey, tx, bills, catOf, saldoTotal, userName }) {
   const cur = buildMonthStats(tx, mKey, catOf);
   const prev = buildMonthStats(tx, prevMonthKey(mKey), catOf);
@@ -559,6 +738,18 @@ function buildReport({ mKey, tx, bills, catOf, saldoTotal, userName }) {
   }
   if (!tips.length) tips.push(`🟢 Mês equilibrado, sem alertas relevantes. Mantenha o ritmo e continue registrando tudo — a qualidade do relatório depende da qualidade dos lançamentos.`);
 
+  /* --- orientação educativa sobre o que fazer com a sobra (NÃO é recomendação de ativo) --- */
+  const eduTips = [];
+  if (savings !== null && savings >= 0.15 && reserve !== null && reserve < 6) {
+    eduTips.push(`💡 Você tem sobra, mas a reserva ainda não cobre 6 meses. Prioridade educacional: primeiro complete a reserva de emergência em algo de alta liquidez e baixo risco, antes de pensar em investimentos de prazo mais longo.`);
+  } else if (savings !== null && savings >= 0.15 && reserve !== null && reserve >= 6) {
+    eduTips.push(`💡 Reserva saudável e sobra consistente. A partir daqui, é comum estudar diversificação por prazo e objetivo (renda fixa, previdência, etc.). Isto é conteúdo educacional — a escolha de produtos deve ser feita com um profissional certificado, considerando seu perfil de risco.`);
+  }
+  if (cur.result > 0) {
+    eduTips.push(`💡 Dinheiro parado em conta perde para a inflação ao longo do tempo. Vale se informar sobre opções conservadoras de curto prazo. O Meton não recomenda ativos específicos — busque orientação de um assessor registrado na CVM.`);
+  }
+  eduTips.push(`⚠️ As orientações acima são educativas e gerais, não constituem recomendação de investimento (art. da Resolução CVM sobre consultoria de valores mobiliários). Decisões devem considerar seu perfil e, idealmente, apoio profissional.`);
+
   /* --- texto compartilhável --- */
   const arrow = (d) => (d === null ? "" : d >= 0 ? ` (▲ ${d.toFixed(0)}%)` : ` (▼ ${(-d).toFixed(0)}%)`);
   const lines = [
@@ -581,13 +772,16 @@ function buildReport({ mKey, tx, bills, catOf, saldoTotal, userName }) {
     `*DICAS DO MÊS*`,
     ...tips.map((t) => `• ${t.replace(/\*/g, "")}`),
     ``,
+    `*ORIENTAÇÃO (educacional)*`,
+    ...eduTips.map((t) => `• ${t.replace(/\*/g, "")}`),
+    ``,
     reserve !== null ? `Reserva atual: ~${reserve.toFixed(1)} mês(es) de despesas` : null,
     ``,
     `_Gerado por ${userName} em ${todayISO().split("-").reverse().join("/")} · Meton Financeira_`,
     `_Conteúdo educacional. Não constitui recomendação de investimento._`,
   ].filter((l) => l !== null);
 
-  return { cur, prev, savings, topCats, tips, overdue, reserve, dIn, dOut, text: lines.join("\n") };
+  return { cur, prev, savings, topCats, tips, eduTips, overdue, reserve, dIn, dOut, text: lines.join("\n") };
 }
 
 /* ---------- identidade visual ---------- */
@@ -720,6 +914,38 @@ function CompareModal({ tx, catOf, onClose }) {
             </Card>
           ) : (
             <>
+              {/* Gráfico de evolução */}
+              <Card className="p-4">
+                <SectionTitle>Evolução de entradas e saídas</SectionTitle>
+                <div className="h-48 -ml-3">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={cols.map((k, i) => ({ mes: monthLabel(k), Entradas: Math.round(stats[i].inn), Saídas: Math.round(stats[i].out), Resultado: Math.round(stats[i].result) }))} barGap={2}>
+                      <CartesianGrid vertical={false} stroke="#e7e5e4" />
+                      <XAxis dataKey="mes" tick={{ fontSize: 11, fill: "#78716c" }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 10, fill: "#a8a29e" }} axisLine={false} tickLine={false} width={44}
+                        tickFormatter={(v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(0)}k` : v)} />
+                      <Tooltip formatter={(v) => brl(v)} contentStyle={{ borderRadius: 12, border: "1px solid #e7e5e4", fontSize: 12 }} />
+                      <Legend wrapperStyle={{ fontSize: 12 }} />
+                      <Bar dataKey="Entradas" fill={DARK} radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="Saídas" fill={NUDE_DEEP} radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div className="h-32 -ml-3 mt-1">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={cols.map((k, i) => ({ mes: monthLabel(k), Resultado: Math.round(stats[i].result) }))}>
+                      <CartesianGrid vertical={false} stroke="#e7e5e4" />
+                      <XAxis dataKey="mes" tick={{ fontSize: 11, fill: "#78716c" }} axisLine={false} tickLine={false} />
+                      <YAxis tick={{ fontSize: 10, fill: "#a8a29e" }} axisLine={false} tickLine={false} width={44}
+                        tickFormatter={(v) => (Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(0)}k` : v)} />
+                      <Tooltip formatter={(v) => brl(v)} contentStyle={{ borderRadius: 12, border: "1px solid #e7e5e4", fontSize: 12 }} />
+                      <Line type="monotone" dataKey="Resultado" stroke={DARK} strokeWidth={2.5} dot={{ r: 3, fill: DARK }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+                <p className="text-[10px] text-stone-400 text-center">Linha = resultado (entradas − saídas) de cada mês.</p>
+              </Card>
+
               {/* Resumo */}
               <Card className="p-3 overflow-x-auto">
                 <SectionTitle>Resumo do mês</SectionTitle>
@@ -928,8 +1154,17 @@ function ReportModal({ tx, bills, catOf, saldoTotal, userName, contacts, onSaveC
                 <p key={i} className="text-sm text-stone-700 leading-snug">{t}</p>
               ))}
             </div>
+          </Card>
+
+          <Card className="p-4">
+            <SectionTitle>Orientação (educacional)</SectionTitle>
+            <div className="space-y-2.5">
+              {report.eduTips.map((t, i) => (
+                <p key={i} className="text-sm text-stone-700 leading-snug">{t}</p>
+              ))}
+            </div>
             <p className="text-[10px] text-stone-400 mt-3 leading-snug">
-              Análise gerada por regras sobre os seus lançamentos. Conteúdo educacional — não constitui recomendação de investimento.
+              Análise gerada por regras sobre os seus lançamentos. Conteúdo educacional — não constitui recomendação de investimento (CVM).
             </p>
           </Card>
         </div>
@@ -1613,12 +1848,14 @@ export default function MetonFinanceira() {
   const [showChangePass, setShowChangePass] = useState(false);
   const [resetTarget, setResetTarget] = useState(null);
   const [addContact, setAddContact] = useState(false);
+  const [showExport, setShowExport] = useState(false);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [extSearch, setExtSearch] = useState("");
   const [extCat, setExtCat] = useState("Todas");
   const contactsTimer = useRef(null);
   const fileRef = useRef(null);
   const photoRef = useRef(null);
+  const backupRef = useRef(null);
   const saveTimer = useRef(null);
   const usersTimer = useRef(null);
 
@@ -1784,8 +2021,66 @@ export default function MetonFinanceira() {
     const topCats = Object.entries(catMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
     const totalOut = topCats.reduce((s, [, v]) => Math.max(s, v), 1);
 
-    return { saldoPF, saldoPJ, inMonth, outMonth, evolution, savings, commit, reserve, score, topCats, totalOut };
+    // meios de pagamento do mês corrente (entradas e saídas por método)
+    const methodMap = {};
+    for (const t of monthTx) {
+      const m = paymentMethod(t.desc);
+      if (!methodMap[m]) methodMap[m] = { in: 0, out: 0 };
+      if (t.amount >= 0) methodMap[m].in += t.amount;
+      else methodMap[m].out -= t.amount;
+    }
+    const methods = Object.entries(methodMap)
+      .map(([name, v]) => ({ name, ...v, total: v.in + v.out }))
+      .sort((a, b) => b.total - a.total);
+
+    // rótulo do mês atual e período usado no cálculo de saúde
+    const curLabel = monthFull(nowKey);
+    const healthMonths = last3.filter((k) => flowTx.some((t) => monthKey(t.date) === k));
+    const periodLabel = healthMonths.length
+      ? `${monthLabel(healthMonths[healthMonths.length - 1])}–${monthLabel(healthMonths[0])}`
+      : "sem histórico suficiente";
+
+    return { saldoPF, saldoPJ, inMonth, outMonth, evolution, savings, commit, reserve, score, topCats, totalOut, methods, curLabel, periodLabel, monthCount: mCount };
   }, [filtered, tx, catOf, wallet]);
+
+  const forecast = useMemo(
+    () => buildForecast({ tx, bills, saldoTotal: metrics.saldoPF + metrics.saldoPJ, wallet }),
+    [tx, bills, metrics.saldoPF, metrics.saldoPJ, wallet]
+  );
+
+  const radarInsights = useMemo(() => {
+    const out = [];
+    const { savings, commit, reserve, inMonth, outMonth } = metrics;
+    if (metrics.monthCount === 0 && inMonth === 0 && outMonth === 0) {
+      return ["Ainda não há dados suficientes neste período. Importe extratos ou lance movimentações para ver a análise."];
+    }
+    // crítica
+    if (outMonth > inMonth && inMonth > 0) {
+      out.push(`🔴 Neste mês você gastou mais do que entrou (${brl(outMonth)} vs ${brl(inMonth)}). É um sinal de alerta se repetir.`);
+    } else if (savings !== null && savings >= 0.2) {
+      out.push(`🟢 Ótimo controle: você tem guardado cerca de ${(savings * 100).toFixed(0)}% do que entra.`);
+    } else if (savings !== null && savings >= 0) {
+      out.push(`🟡 Você fecha no positivo, mas a folga é pequena (${(savings * 100).toFixed(0)}% de sobra). A meta saudável é 15–20%.`);
+    }
+    // melhoria
+    if (metrics.topCats.length) {
+      const [cat, val] = metrics.topCats[0];
+      out.push(`💡 Sua maior saída do mês é "${cat}" (${brl(val)}). É o melhor lugar para buscar economia com pouco esforço.`);
+    }
+    if (commit !== null && commit > 0.8) {
+      out.push(`⚠️ Cerca de ${(commit * 100).toFixed(0)}% da sua renda está comprometida com saídas. Acima de 80%, sobra pouca margem para imprevistos.`);
+    }
+    // previsão
+    if (forecast.daysToZero !== null) {
+      out.push(`🔴 No ritmo médio recente, o caixa tende a zerar em ~${forecast.daysToZero} dias. Priorize cortar saídas ou antecipar recebimentos.`);
+    } else if (forecast.avgNet > 0 && reserve !== null && reserve < 6) {
+      out.push(`💡 Você tem sobrado em média ${brl(forecast.avgNet)}/mês. Direcionar essa sobra para completar a reserva (meta de 6 meses) é o passo mais seguro antes de investir. Conteúdo educacional — busque um profissional certificado para escolher produtos.`);
+    } else if (forecast.avgNet > 0 && reserve !== null && reserve >= 6) {
+      out.push(`💡 Reserva saudável e sobra consistente. É um bom momento para se informar sobre diversificação por objetivo e prazo — sempre com orientação profissional. O Meton não indica ativos específicos.`);
+    }
+    if (!out.length) out.push("Período equilibrado, sem alertas relevantes. Continue registrando tudo para a análise ficar cada vez mais precisa.");
+    return out;
+  }, [metrics, forecast]);
 
   const upcomingBills = useMemo(() => {
     const now = new Date(todayISO());
@@ -1993,11 +2288,45 @@ export default function MetonFinanceira() {
   };
 
   const exportBackup = () => {
-    const blob = new Blob([JSON.stringify({ tx, bills, rules }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ tx, bills, rules, contacts, version: 11 }, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `meton-backup-${todayISO()}.json`;
     a.click();
+  };
+
+  const importBackup = async (file) => {
+    try {
+      const data = JSON.parse(await file.text());
+      if (!data || (!Array.isArray(data.tx) && !Array.isArray(data.bills))) {
+        setToast("Arquivo de backup inválido."); return;
+      }
+      const mode = window.confirm("Como importar?\n\nOK = MESCLAR com os dados atuais (sem apagar).\nCancelar = SUBSTITUIR tudo pelos dados do backup.");
+      if (mode) {
+        // mesclar, evitando duplicados de lançamentos
+        const existing = new Set(tx.map(txHash));
+        const newTx = (data.tx || []).filter((t) => !existing.has(txHash(t)));
+        setTx((p) => [...p, ...newTx].sort((a, b) => b.date.localeCompare(a.date)));
+        setBills((p) => {
+          const seen = new Set(p.map((b) => `${normalize(b.desc)}|${b.amount}|${b.dueDate}`));
+          const add = (data.bills || []).filter((b) => !seen.has(`${normalize(b.desc)}|${b.amount}|${b.dueDate}`));
+          return [...p, ...add];
+        });
+        if (Array.isArray(data.contacts)) setContacts((p) => {
+          const phones = new Set(p.map((c) => c.phone));
+          return [...p, ...data.contacts.filter((c) => !phones.has(c.phone))];
+        });
+        setToast(`Backup mesclado: +${newTx.length} lançamento(s).`);
+      } else {
+        setTx((data.tx || []).sort((a, b) => b.date.localeCompare(a.date)));
+        setBills(data.bills || []);
+        if (Array.isArray(data.rules) && data.rules.length) setRules(data.rules);
+        if (Array.isArray(data.contacts)) setContacts(data.contacts);
+        setToast("Backup restaurado (dados substituídos).");
+      }
+    } catch (e) {
+      setToast("Não consegui ler o backup: " + (e?.message || "arquivo inválido"));
+    }
   };
 
   const wipeAll = () => {
@@ -2115,7 +2444,10 @@ export default function MetonFinanceira() {
           {tab === "radar" && !empty && (
             <>
               <div className="text-[11px] uppercase tracking-widest text-green-200 mb-1">
-                Olá, {currentUser.name.split(" ")[0]} · Saldo consolidado {wallet !== "Tudo" && `· ${wallet}`}
+                Olá, {currentUser.name.split(" ")[0]} · {metrics.curLabel}
+              </div>
+              <div className="text-[10px] text-green-300 mb-1.5">
+                Saldo consolidado {wallet !== "Tudo" ? `· ${wallet}` : "· PF + PJ"}
               </div>
               <div className="mt-mono text-4xl font-semibold tracking-tight">{brl(saldoAtual)}</div>
               {wallet === "Tudo" && (
@@ -2180,6 +2512,45 @@ export default function MetonFinanceira() {
               <>
                 <Card className="p-5">
                   <HealthGauge score={metrics.score} savings={metrics.savings} commit={metrics.commit} reserve={metrics.reserve} />
+                  <p className="text-[10px] text-stone-400 mt-3 text-center">
+                    Calculado sobre {metrics.periodLabel} ({metrics.monthCount} mês(es) com dados)
+                  </p>
+                </Card>
+
+                {/* Previsão de fluxo de caixa */}
+                <Card className="p-5">
+                  <SectionTitle>Previsão de caixa</SectionTitle>
+                  <p className="text-[11px] text-stone-500 mb-3">
+                    Projeção com base na média dos últimos {forecast.monthsUsed || 0} mês(es) + contas já cadastradas.
+                  </p>
+                  {forecast.monthsUsed === 0 ? (
+                    <p className="text-sm text-stone-400">Ainda sem histórico suficiente para prever. Importe mais meses.</p>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        {forecast.proj.map((p) => (
+                          <div key={p.horizon} className="rounded-xl p-2.5" style={{ background: NUDE }}>
+                            <div className="text-[10px] text-stone-500 font-semibold">{p.horizon} dias</div>
+                            <div className={`mt-mono text-sm font-bold mt-1 ${p.projected >= 0 ? "text-green-800" : "text-rose-600"}`}>
+                              {brl(p.projected)}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex justify-between text-[11px] text-stone-500 mt-3">
+                        <span>Fluxo médio/mês</span>
+                        <span className={`mt-mono font-semibold ${forecast.avgNet >= 0 ? "text-green-700" : "text-rose-600"}`}>
+                          {forecast.avgNet >= 0 ? "+" : ""}{brl(forecast.avgNet)}
+                        </span>
+                      </div>
+                      {forecast.daysToZero !== null && (
+                        <div className="mt-2 rounded-xl px-3 py-2 text-[11px] font-semibold flex items-start gap-1.5" style={{ background: "#fef2f2", color: "#b91c1c" }}>
+                          <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+                          No ritmo atual, seu saldo pode zerar em ~{forecast.daysToZero} dias. Reveja as saídas ou antecipe recebimentos.
+                        </div>
+                      )}
+                    </>
+                  )}
                 </Card>
 
                 {alertCount > 0 && (
@@ -2238,6 +2609,37 @@ export default function MetonFinanceira() {
                       ))}
                     </div>
                   )}
+                </Card>
+
+                {/* Meios de pagamento */}
+                {metrics.methods.length > 0 && (
+                  <Card className="p-5">
+                    <SectionTitle>Por meio de pagamento (mês)</SectionTitle>
+                    <div className="divide-y divide-stone-100">
+                      {metrics.methods.map((m) => (
+                        <div key={m.name} className="flex items-center justify-between py-2 text-sm">
+                          <span className="text-stone-700 font-medium">{m.name}</span>
+                          <span className="flex gap-3 mt-mono text-xs">
+                            {m.in > 0 && <span className="text-green-700">+{brl(m.in)}</span>}
+                            {m.out > 0 && <span className="text-stone-600">−{brl(m.out)}</span>}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                )}
+
+                {/* Dicas informativas do período */}
+                <Card className="p-5">
+                  <SectionTitle>Leitura do período</SectionTitle>
+                  <div className="space-y-2">
+                    {radarInsights.map((t, i) => (
+                      <p key={i} className="text-sm text-stone-700 leading-snug">{t}</p>
+                    ))}
+                  </div>
+                  <p className="text-[10px] text-stone-400 mt-3 leading-snug">
+                    Conteúdo educacional gerado a partir dos seus lançamentos. Não constitui recomendação de investimento (CVM).
+                  </p>
                 </Card>
               </>
             )}
@@ -2338,9 +2740,31 @@ export default function MetonFinanceira() {
             {upcomingBills.length === 0 ? (
               <Card className="p-6 text-center text-sm text-stone-400">Nenhuma conta cadastrada. Cadastre o DAS, aluguel, honorários a receber…</Card>
             ) : (
-              <div className="space-y-2.5">
-                {upcomingBills.map((b) => {
-                  const late = b.days < 0;
+              <>
+                {/* Provisão: total futuro a pagar/receber, incluindo parcelas restantes */}
+                <Card className="p-4">
+                  <SectionTitle>Provisão futura</SectionTitle>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-xl p-3" style={{ background: "#fef2f2" }}>
+                      <div className="text-[11px] font-semibold text-rose-700">A pagar</div>
+                      <div className="mt-mono text-base font-bold text-rose-800 mt-1">
+                        {brl(upcomingBills.filter((b) => b.type === "pagar").reduce((s, b) => s + remainingProvision(b), 0))}
+                      </div>
+                    </div>
+                    <div className="rounded-xl p-3" style={{ background: "#f0fdf4" }}>
+                      <div className="text-[11px] font-semibold text-green-700">A receber</div>
+                      <div className="mt-mono text-base font-bold text-green-800 mt-1">
+                        {brl(upcomingBills.filter((b) => b.type === "receber").reduce((s, b) => s + remainingProvision(b), 0))}
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-[10px] text-stone-400 mt-2">
+                    Inclui todas as parcelas restantes de contas parceladas. É o compromisso total já conhecido.
+                  </p>
+                </Card>
+                <div className="space-y-2.5">
+                  {upcomingBills.map((b) => {
+                    const late = b.days < 0;
                   const soon = b.days >= 0 && b.days <= 7;
                   return (
                     <Card key={b.id} className={`p-4 ${late ? "border-rose-300" : soon ? "border-amber-300" : ""}`}>
@@ -2385,8 +2809,9 @@ export default function MetonFinanceira() {
                       </div>
                     </Card>
                   );
-                })}
-              </div>
+                  })}
+                </div>
+              </>
             )}
 
             {/* Pagas — permite estornar ("não paguei") */}
@@ -2642,10 +3067,18 @@ export default function MetonFinanceira() {
               ))}
             </Card>
 
-            <SectionTitle>Dados</SectionTitle>
+            <SectionTitle>Relatórios e dados</SectionTitle>
             <Card className="divide-y divide-stone-100">
+              <button onClick={() => setShowExport(true)} className="w-full p-4 flex items-center gap-3 text-sm font-medium text-stone-700">
+                <FileText size={16} style={{ color: DARK }} /> Exportar período (PDF / WhatsApp / e-mail)
+              </button>
               <button onClick={exportBackup} className="w-full p-4 flex items-center gap-3 text-sm font-medium text-stone-700">
                 <Download size={16} style={{ color: DARK }} /> Exportar backup (JSON)
+              </button>
+              <input ref={backupRef} type="file" accept=".json,application/json" className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) importBackup(f); e.target.value = ""; }} />
+              <button onClick={() => backupRef.current?.click()} className="w-full p-4 flex items-center gap-3 text-sm font-medium text-stone-700">
+                <Upload size={16} style={{ color: DARK }} /> Importar backup (JSON)
               </button>
               <button onClick={loadSample} className="w-full p-4 flex items-center gap-3 text-sm font-medium text-stone-700">
                 <RotateCcw size={16} style={{ color: DARK }} /> Recarregar dados de exemplo
@@ -2658,6 +3091,15 @@ export default function MetonFinanceira() {
                   <Trash2 size={16} /> Apagar todos os dados financeiros
                 </button>
               )}
+            </Card>
+
+            <Card className="p-4" style={{ background: NUDE }}>
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={15} className="shrink-0 mt-0.5" style={{ color: NUDE_DEEP }} />
+                <p className="text-[11px] text-stone-600 leading-relaxed">
+                  <b>Usar no celular e no computador?</b> Hoje os dados ficam salvos só neste aparelho/navegador — não sincronizam sozinhos. Para transportar: exporte o backup aqui, envie o arquivo para o outro aparelho e use "Importar backup". Sincronização automática entre dispositivos exige a versão com servidor (em desenvolvimento).
+                </p>
+              </div>
             </Card>
             <p className="text-[11px] text-stone-400 px-1 leading-relaxed">
               Meton Financeira · Fase 1 · uso pessoal. Senhas protegidas por hash SHA-256.
@@ -2678,6 +3120,8 @@ export default function MetonFinanceira() {
       )}
       {showAddBill && (
         <AddBillModal rules={rules} onClose={() => setShowAddBill(false)} onSave={(b) => {
+          const dup = bills.some((x) => !x.paid && normalize(x.desc) === normalize(b.desc) && Math.abs(x.amount - b.amount) < 0.005 && x.dueDate === b.dueDate && x.wallet === b.wallet);
+          if (dup) { setToast("Essa conta já está cadastrada (mesma descrição, valor e vencimento). Não foi duplicada."); return; }
           setBills((p) => [...p, { ...b, id: uid(), paid: false, by: currentUser?.name }]);
           setShowAddBill(false); setToast("Conta cadastrada.");
         }} />
@@ -2720,6 +3164,10 @@ export default function MetonFinanceira() {
         }} />
       )}
       {showOnboarding && <Onboarding onClose={() => setShowOnboarding(false)} />}
+      {showExport && (
+        <ExportPeriodModal tx={tx} bills={bills} catOf={catOf} userName={currentUser.name}
+          contacts={contacts} onClose={() => setShowExport(false)} setToast={setToast} />
+      )}
 
       {toast && <Toast msg={toast} onClose={() => setToast(null)} />}
 
@@ -2888,6 +3336,78 @@ function AddBillModal({ onClose, onSave, initial, rules }) {
           className="w-full py-2.5 rounded-xl text-white font-semibold text-sm disabled:opacity-40" style={{ background: DARK }}>
           {initial ? "Salvar alterações" : "Salvar conta"}
         </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ExportPeriodModal({ tx, bills, catOf, userName, contacts, onClose, setToast }) {
+  const firstOfMonth = todayISO().slice(0, 8) + "01";
+  const [from, setFrom] = useState(firstOfMonth);
+  const [to, setTo] = useState(todayISO());
+  const [busy, setBusy] = useState(false);
+  const report = useMemo(() => buildPeriodReport({ from, to, tx, bills, catOf, userName }), [from, to, tx, bills, catOf, userName]);
+  const title = `Período ${from.split("-").reverse().join("/")} a ${to.split("-").reverse().join("/")}`;
+
+  const savePdf = async () => {
+    setBusy(true);
+    try {
+      const blob = await textToPdf(title, report.text.split("\n"));
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `meton-periodo-${from}_a_${to}.pdf`;
+      a.click();
+      setToast("PDF gerado. Você pode anexá-lo no WhatsApp ou e-mail.");
+    } catch (e) {
+      setToast("Falha ao gerar PDF: " + (e?.message || "erro") + ". Use 'Copiar' como alternativa.");
+    }
+    setBusy(false);
+  };
+  const shareWhatsApp = () => window.open(`https://wa.me/?text=${encodeURIComponent(report.text)}`, "_blank");
+  const shareEmail = () => window.open(`mailto:?subject=${encodeURIComponent("Relatório Meton — " + title)}&body=${encodeURIComponent(report.text)}`, "_blank");
+  const copyText = async () => {
+    try { await navigator.clipboard.writeText(report.text); setToast("Relatório copiado."); }
+    catch (e) { setToast("Não consegui copiar neste navegador."); }
+  };
+
+  return (
+    <ModalShell title="Exportar período" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="flex gap-2">
+          <div className="flex-1">
+            <label className="block text-xs text-stone-500 mb-1 pl-1">De</label>
+            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className={inputCls} />
+          </div>
+          <div className="flex-1">
+            <label className="block text-xs text-stone-500 mb-1 pl-1">Até</label>
+            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className={inputCls} />
+          </div>
+        </div>
+
+        <div className="rounded-xl p-3" style={{ background: NUDE }}>
+          <div className="flex justify-between text-sm"><span className="text-stone-600">Entradas</span><span className="mt-mono font-semibold text-green-800">{brl(report.inn)}</span></div>
+          <div className="flex justify-between text-sm"><span className="text-stone-600">Saídas</span><span className="mt-mono font-semibold text-stone-800">{brl(report.out)}</span></div>
+          <div className="flex justify-between text-sm pt-1 mt-1 border-t border-stone-200"><span className="font-semibold">Resultado</span><span className={`mt-mono font-bold ${report.result >= 0 ? "text-green-800" : "text-rose-600"}`}>{brl(report.result)}</span></div>
+          <div className="text-[11px] text-stone-400 mt-1">{report.count} lançamento(s) no período</div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={savePdf} disabled={busy} className="py-2.5 rounded-xl text-white font-semibold text-sm flex items-center justify-center gap-1.5 disabled:opacity-50" style={{ background: DARK }}>
+            <FileText size={15} /> {busy ? "Gerando…" : "Salvar PDF"}
+          </button>
+          <button onClick={shareWhatsApp} className="py-2.5 rounded-xl text-white font-semibold text-sm flex items-center justify-center gap-1.5" style={{ background: "#25D366" }}>
+            <Share2 size={15} /> WhatsApp
+          </button>
+          <button onClick={shareEmail} className="py-2.5 rounded-xl border border-stone-300 text-stone-700 font-semibold text-sm flex items-center justify-center gap-1.5">
+            <Mail size={15} /> E-mail
+          </button>
+          <button onClick={copyText} className="py-2.5 rounded-xl border border-stone-300 text-stone-700 font-semibold text-sm flex items-center justify-center gap-1.5">
+            <Copy size={15} /> Copiar
+          </button>
+        </div>
+        <p className="text-[10px] text-stone-400 leading-snug">
+          O botão WhatsApp/E-mail envia o resumo em texto. Para mandar o PDF, gere com "Salvar PDF" e anexe manualmente na conversa.
+        </p>
       </div>
     </ModalShell>
   );
