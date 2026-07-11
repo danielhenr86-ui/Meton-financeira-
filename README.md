@@ -69,13 +69,24 @@ republica sozinha.
 
 ---
 
-## Instalar no celular como "app"
+## Instalar como aplicativo (PWA)
+
+Este projeto é um **PWA completo**: tem ícone próprio, abre em tela cheia,
+e funciona **offline** (o app fica guardado no aparelho).
 
 Depois de publicado, abra o endereço no celular:
-- **iPhone (Safari):** botão compartilhar → "Adicionar à Tela de Início".
-- **Android (Chrome):** menu (⋮) → "Adicionar à tela inicial".
 
-Vira um ícone como se fosse um aplicativo.
+- **Android (Chrome):** aparece automaticamente um banner "Instalar o Meton".
+  Se não aparecer, use o menu (⋮) → "Instalar aplicativo".
+- **iPhone (Safari):** o app mostra as instruções na tela. É: botão
+  **Compartilhar** (quadradinho com seta ↑) → **"Adicionar à Tela de Início"**.
+  *(A Apple não permite instalação automática — tem que ser por aí.)*
+
+Depois de instalado, o Meton vira um ícone na tela do celular, abre sem a barra
+do navegador e funciona mesmo sem internet.
+
+> Observação: os dados continuam salvos **no aparelho**. Instalar como app não
+> sincroniza celular e computador — isso exige o backend (ver o final deste arquivo).
 
 ---
 
