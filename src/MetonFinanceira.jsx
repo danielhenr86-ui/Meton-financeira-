@@ -896,13 +896,13 @@ function CompareModal({ tx, catOf, onClose }) {
   return (
     <div className="fixed inset-0 z-50 flex flex-col" style={{ background: NUDE }}>
       <style>{fontStyles}</style>
-      <div className="text-white px-4 pt-4 pb-4 shrink-0" style={{ background: DARK }}>
+      <div className="text-white px-4 pb-4 shrink-0" style={{ background: DARK, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
         <div className="max-w-lg mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
             <TrendingUp size={18} style={{ color: LIGHT }} />
             <span className="mt-display font-bold">Comparar meses</span>
           </div>
-          <button onClick={onClose} className="text-green-200"><X size={20} /></button>
+          <button onClick={onClose} className="text-green-200 p-2 -m-2" aria-label="Fechar"><X size={22} /></button>
         </div>
       </div>
 
@@ -1089,13 +1089,13 @@ function ReportModal({ tx, bills, catOf, saldoTotal, userName, contacts, onSaveC
     <div className="fixed inset-0 z-50 flex flex-col" style={{ background: NUDE }}>
       <style>{fontStyles}</style>
       {/* topo */}
-      <div className="text-white px-4 pt-4 pb-4 shrink-0" style={{ background: DARK }}>
+      <div className="text-white px-4 pb-4 shrink-0" style={{ background: DARK, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
         <div className="max-w-lg mx-auto flex items-center justify-between">
           <div className="flex items-center gap-2">
             <FileText size={18} style={{ color: LIGHT }} />
             <span className="mt-display font-bold">Relatório mensal</span>
           </div>
-          <button onClick={onClose} className="text-green-200"><X size={20} /></button>
+          <button onClick={onClose} className="text-green-200 p-2 -m-2" aria-label="Fechar"><X size={22} /></button>
         </div>
         <div className="max-w-lg mx-auto mt-3">
           <select value={mKey} onChange={(e) => setMKey(e.target.value)}
@@ -1171,7 +1171,7 @@ function ReportModal({ tx, bills, catOf, saldoTotal, userName, contacts, onSaveC
       </div>
 
       {/* barra de compartilhamento */}
-      <div className="shrink-0 bg-white border-t border-stone-200 px-4 py-3">
+      <div className="shrink-0 bg-white border-t border-stone-200 px-4 pt-3" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 12px)" }}>
         <div className="max-w-lg mx-auto grid grid-cols-4 gap-2">
           <button onClick={() => setShowWa(true)} className="flex flex-col items-center gap-1 py-2 rounded-xl text-white" style={{ background: "#25D366" }}>
             <Share2 size={17} />
@@ -1195,7 +1195,7 @@ function ReportModal({ tx, bills, catOf, saldoTotal, userName, contacts, onSaveC
       {/* folha de envio WhatsApp para qualquer contato */}
       {showWa && (
         <div className="fixed inset-0 z-[55] flex items-end sm:items-center justify-center" style={{ background: "rgba(20,83,45,0.5)" }} onClick={() => setShowWa(false)}>
-          <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5 pb-8" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="mt-display font-bold text-base flex items-center gap-2">
                 <Share2 size={18} style={{ color: "#25D366" }} /> Enviar por WhatsApp
@@ -1614,7 +1614,7 @@ function AuthScreen({ users, onAuthed, onCreateFirst, onAddUser, onResetAccess, 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: NUDE }}>
       <style>{fontStyles}</style>
-      <div className="pt-14 pb-10 px-6 text-center" style={{ background: DARK }}>
+      <div className="pb-10 px-6 text-center" style={{ background: DARK, paddingTop: "calc(env(safe-area-inset-top, 0px) + 56px)" }}>
         <div className="w-14 h-14 rounded-2xl mx-auto mb-3 flex items-center justify-center" style={{ background: LIGHT }}>
           <Compass size={28} style={{ color: DARK }} />
         </div>
@@ -2419,7 +2419,7 @@ export default function MetonFinanceira() {
 
       {/* ===== hero ===== */}
       <div style={{ background: DARK }} className="text-white">
-        <div className="max-w-lg mx-auto px-4 pt-4 pb-6">
+        <div className="max-w-lg mx-auto px-4 pb-6" style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
           <div className="flex items-center justify-between mb-5">
             <div className="flex items-center gap-2.5">
               <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: LIGHT }}>
@@ -3172,7 +3172,7 @@ export default function MetonFinanceira() {
       {toast && <Toast msg={toast} onClose={() => setToast(null)} />}
 
       {/* bottom nav */}
-      <nav className="fixed bottom-0 inset-x-0 z-40 bg-white border-t border-stone-200">
+      <nav className="fixed bottom-0 inset-x-0 z-40 bg-white border-t border-stone-200" style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
         <div className="max-w-lg mx-auto grid grid-cols-5">
           {[
             { id: "radar", icon: Compass, label: "Radar" },
@@ -3205,7 +3205,7 @@ export default function MetonFinanceira() {
 function ModalShell({ title, onClose, children }) {
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(20,83,45,0.45)" }} onClick={onClose}>
-      <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5 pb-8" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
           <h3 className="mt-display font-bold text-base">{title}</h3>
           <button onClick={onClose} className="text-stone-400"><X size={20} /></button>
