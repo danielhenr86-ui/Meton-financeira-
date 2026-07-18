@@ -6,7 +6,7 @@ import {
   FileUp, Download, RotateCcw, X, ChevronRight, BellRing, LogOut, Mail,
   Lock, User, Eye, EyeOff, FileText, Share2, Copy, Users, ShieldCheck,
   KeyRound, Phone, Save, CheckCheck, PlayCircle, ChevronLeft, Sparkles,
-  Camera, Pencil, Search, ArrowLeftRight
+  Camera, Pencil, Search, ArrowLeftRight, CalendarDays
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
@@ -37,6 +37,51 @@ const CATEGORIES = [
   "Impostos", "Fornecedores", "Pró-labore", "Tarifas bancárias",
   "Investimentos", "Lazer", "Educação", "Outros"
 ];
+
+/* ---------- classificação contábil (natureza do lançamento) ----------
+   Permite ler o resultado como uma DRE simplificada: separar o que é
+   custo fixo, variável, despesa operacional, tributo, retirada, etc. */
+const CLASSIFICATIONS = [
+  "Receita operacional",
+  "Custo fixo",
+  "Custo variável",
+  "Despesa operacional",
+  "Despesa administrativa",
+  "Tributos",
+  "Despesa financeira",
+  "Investimento",
+  "Retirada / Pró-labore",
+  "Pessoal (PF)",
+  "Não classificado",
+];
+
+// sugestão automática de classificação a partir da categoria e da descrição
+function suggestClassification(category, desc = "", wallet = "PJ", type = "pagar") {
+  const nd = normalize(desc);
+  if (/alugue|locacao|condominio|iptu do imovel/.test(nd)) return "Custo fixo";
+  if (/internet|telefon|energia|luz|agua|saneamento|hospedagem|dominio|assinatura|software|sistema|contabilidade|honorarios contab/.test(nd)) return "Custo fixo";
+  switch (category) {
+    case "Recebimentos": return type === "receber" || wallet === "PJ" ? "Receita operacional" : "Pessoal (PF)";
+    case "Impostos": return "Tributos";
+    case "Fornecedores": return "Custo variável";
+    case "Pró-labore": return "Retirada / Pró-labore";
+    case "Tarifas bancárias": return "Despesa financeira";
+    case "Investimentos": return "Investimento";
+    case "Moradia": return wallet === "PJ" ? "Custo fixo" : "Pessoal (PF)";
+    case "Transporte": return wallet === "PJ" ? "Despesa operacional" : "Pessoal (PF)";
+    case "Educação": return wallet === "PJ" ? "Despesa administrativa" : "Pessoal (PF)";
+    case "Alimentação":
+    case "Saúde":
+    case "Lazer": return wallet === "PJ" ? "Despesa administrativa" : "Pessoal (PF)";
+    default: return wallet === "PJ" ? "Despesa operacional" : "Pessoal (PF)";
+  }
+}
+
+// classificação efetiva de uma conta/lançamento (respeita escolha manual)
+function classOf(item, category) {
+  if (item?.classification && CLASSIFICATIONS.includes(item.classification)) return item.classification;
+  return suggestClassification(category || item?.category || "Outros", item?.desc || "", item?.wallet || "PJ", item?.type || "pagar");
+}
 
 const DEFAULT_RULES = [
   // ----- Impostos -----
@@ -564,12 +609,20 @@ function buildMonthStats(tx, mKey, catOf) {
   const out = flow.filter((t) => t.amount < 0).reduce((s, t) => s - t.amount, 0);
   const byWallet = {};
   for (const w of ["PF", "PJ"]) {
-    // no detalhamento por carteira, transferências aparecem (é onde o pró-labore faz sentido)
+    // por carteira, separamos o que é movimento próprio do que é transferência interna,
+    // para não parecer que a PJ "gastou" o pró-labore como se fosse despesa.
     const wt = mTx.filter((t) => t.wallet === w);
+    const own = wt.filter((t) => !isTransfer(t));
+    const tr = wt.filter((t) => isTransfer(t));
     byWallet[w] = {
-      in: wt.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0),
-      out: wt.filter((t) => t.amount < 0).reduce((s, t) => s - t.amount, 0),
+      in: own.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0),
+      out: own.filter((t) => t.amount < 0).reduce((s, t) => s - t.amount, 0),
+      transferIn: tr.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0),
+      transferOut: tr.filter((t) => t.amount < 0).reduce((s, t) => s - t.amount, 0),
     };
+    // totais brutos (movimento real da conta), para conferência com o banco
+    byWallet[w].grossIn = byWallet[w].in + byWallet[w].transferIn;
+    byWallet[w].grossOut = byWallet[w].out + byWallet[w].transferOut;
   }
   const cats = {};
   for (const t of flow) {
@@ -590,7 +643,8 @@ function buildPeriodReport({ from, to, tx, bills, catOf, userName }) {
   const out = flow.filter((t) => t.amount < 0).reduce((s, t) => s - t.amount, 0);
   const byWallet = {};
   for (const w of ["PF", "PJ"]) {
-    const wt = rows.filter((t) => t.wallet === w);
+    // movimento próprio da carteira (exclui transferências internas)
+    const wt = rows.filter((t) => t.wallet === w && !isTransfer(t));
     byWallet[w] = {
       in: wt.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0),
       out: wt.filter((t) => t.amount < 0).reduce((s, t) => s - t.amount, 0),
@@ -618,8 +672,8 @@ function buildPeriodReport({ from, to, tx, bills, catOf, userName }) {
     `Lançamentos: ${rows.length}`,
     ``,
     `POR CARTEIRA`,
-    `PF: entrou ${brl(byWallet.PF.in)} · saiu ${brl(byWallet.PF.out)}`,
-    `PJ: entrou ${brl(byWallet.PJ.in)} · saiu ${brl(byWallet.PJ.out)}`,
+    `PF: entradas próprias ${brl(byWallet.PF.in)} · despesas próprias ${brl(byWallet.PF.out)}`,
+    `PJ: entradas próprias ${brl(byWallet.PJ.in)} · despesas próprias ${brl(byWallet.PJ.out)}`,
     ``,
     `GASTOS POR CATEGORIA`,
     ...topCats.map(([c, v]) => `- ${c}: ${brl(v)}`),
@@ -763,8 +817,8 @@ function buildReport({ mKey, tx, bills, catOf, saldoTotal, userName }) {
     savings !== null ? `Taxa de sobra: ${(savings * 100).toFixed(0)}%` : null,
     ``,
     `*POR CARTEIRA*`,
-    `PF: entrou ${brl(cur.byWallet.PF.in)} · saiu ${brl(cur.byWallet.PF.out)}`,
-    `PJ: entrou ${brl(cur.byWallet.PJ.in)} · saiu ${brl(cur.byWallet.PJ.out)}`,
+    `PF: entradas próprias ${brl(cur.byWallet.PF.in)} · despesas próprias ${brl(cur.byWallet.PF.out)}${cur.byWallet.PF.transferIn || cur.byWallet.PF.transferOut ? ` (+ transf. internas: +${brl(cur.byWallet.PF.transferIn)} / -${brl(cur.byWallet.PF.transferOut)})` : ""}`,
+    `PJ: entradas próprias ${brl(cur.byWallet.PJ.in)} · despesas próprias ${brl(cur.byWallet.PJ.out)}${cur.byWallet.PJ.transferIn || cur.byWallet.PJ.transferOut ? ` (+ transf. internas: +${brl(cur.byWallet.PJ.transferIn)} / -${brl(cur.byWallet.PJ.transferOut)})` : ""}`,
     ``,
     topCats.length ? `*MAIORES GASTOS*` : null,
     ...topCats.map(([c, v], i) => `${i + 1}. ${c}: ${brl(v)}`),
@@ -1127,9 +1181,58 @@ function ReportModal({ tx, bills, catOf, saldoTotal, userName, contacts, onSaveC
                 {brl(report.cur.result)}
               </span>
             </div>
-            <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-stone-500">
-              <span>PF: {brl(report.cur.byWallet.PF.in)} / {brl(report.cur.byWallet.PF.out)}</span>
-              <span>PJ: {brl(report.cur.byWallet.PJ.in)} / {brl(report.cur.byWallet.PJ.out)}</span>
+          </Card>
+
+          {/* Detalhamento por carteira, separando movimento próprio de transferência interna */}
+          <Card className="p-4">
+            <SectionTitle>Por carteira</SectionTitle>
+            <div className="space-y-3">
+              {["PF", "PJ"].map((w) => {
+                const d = report.cur.byWallet[w];
+                const hasTransfer = d.transferIn > 0 || d.transferOut > 0;
+                return (
+                  <div key={w} className="rounded-xl p-3" style={{ background: NUDE }}>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="mt-display text-xs font-bold" style={{ color: DARK }}>{w}</span>
+                      <span className="text-[10px] text-stone-500">
+                        resultado próprio{" "}
+                        <b className={`mt-mono ${d.in - d.out >= 0 ? "text-green-700" : "text-rose-600"}`}>
+                          {brl(d.in - d.out)}
+                        </b>
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-[11px] py-0.5">
+                      <span className="text-stone-600">Entradas próprias</span>
+                      <span className="mt-mono font-semibold text-green-800">{brl(d.in)}</span>
+                    </div>
+                    <div className="flex justify-between text-[11px] py-0.5">
+                      <span className="text-stone-600">Despesas próprias</span>
+                      <span className="mt-mono font-semibold text-stone-700">{brl(d.out)}</span>
+                    </div>
+                    {hasTransfer && (
+                      <>
+                        <div className="flex justify-between text-[11px] py-0.5 mt-1 pt-1 border-t border-stone-200">
+                          <span className="flex items-center gap-1" style={{ color: NUDE_DEEP }}>
+                            <ArrowLeftRight size={10} /> Transferências internas
+                          </span>
+                          <span className="mt-mono font-semibold" style={{ color: NUDE_DEEP }}>
+                            {d.transferIn > 0 ? `+${brl(d.transferIn)}` : ""}
+                            {d.transferIn > 0 && d.transferOut > 0 ? " · " : ""}
+                            {d.transferOut > 0 ? `−${brl(d.transferOut)}` : ""}
+                          </span>
+                        </div>
+                        <p className="text-[9.5px] text-stone-400 mt-1 leading-snug">
+                          Não é despesa: é dinheiro passando de uma carteira para a outra (ex.: pró-labore). Por isso não entra no resultado consolidado.
+                        </p>
+                      </>
+                    )}
+                    <div className="flex justify-between text-[10px] pt-1.5 mt-1 border-t border-stone-200 text-stone-400">
+                      <span>Movimento total da conta</span>
+                      <span className="mt-mono">+{brl(d.grossIn)} / −{brl(d.grossOut)}</span>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </Card>
 
@@ -1341,7 +1444,7 @@ const SLIDES = [
   {
     tag: "Passo 2 · Importar",
     title: "Traga seu extrato em 1 toque",
-    body: "Baixe o extrato no app do seu banco e envie aqui em CSV, OFX ou PDF. Lançamentos repetidos são ignorados automaticamente.",
+    body: "Baixe o extrato no app do seu banco e envie aqui em CSV, OFX, PDF ou foto. O Meton não se conecta ao banco: você traz o arquivo, ele organiza. Repetidos são ignorados.",
     visual: (
       <MiniCard className="p-4 text-center">
         <FileUp size={28} className="mx-auto mb-2" style={{ color: DARK }} />
@@ -1453,8 +1556,8 @@ const SLIDES = [
   },
   {
     tag: "Passo 8 · Equipe",
-    title: "Compartilhe o acesso com quem confia",
-    body: "Adicione outros usuários (seu sócio, seu contador, sua família). Cada um lança, edita e envia relatórios. Você controla quem entra.",
+    title: "Perfis para quem divide as contas",
+    body: "Crie perfis para sócio, contador ou família — cada um com seu login, neste aparelho. Acesso remoto de outro celular ou computador virá na versão com servidor.",
     visual: (
       <MiniCard className="divide-y divide-stone-100">
         {[["Daniel", "administrador", true], ["Clarice", "colaborador", false]].map(([n, r, adm]) => (
@@ -1832,6 +1935,8 @@ export default function MetonFinanceira() {
   const [tx, setTx] = useState([]);
   const [bills, setBills] = useState([]);
   const [rules, setRules] = useState(DEFAULT_RULES);
+  // configurações do usuário: reserva de impostos e orçamentos por categoria
+  const [settings, setSettings] = useState({ taxPercent: 6, taxEnabled: true, budgets: {} });
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("radar");
   const [wallet, setWallet] = useState("Tudo");
@@ -1852,6 +1957,10 @@ export default function MetonFinanceira() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [extSearch, setExtSearch] = useState("");
   const [extCat, setExtCat] = useState("Todas");
+  const [extFrom, setExtFrom] = useState("");
+  const [extTo, setExtTo] = useState("");
+  const [extShowFilters, setExtShowFilters] = useState(false);
+  const [editingCatId, setEditingCatId] = useState(null);
   const contactsTimer = useRef(null);
   const fileRef = useRef(null);
   const photoRef = useRef(null);
@@ -1902,6 +2011,7 @@ export default function MetonFinanceira() {
           setTx(d.tx || []);
           setBills(d.bills || []);
           setRules(d.rules?.length ? d.rules : DEFAULT_RULES);
+          if (d.settings) setSettings((s) => ({ ...s, ...d.settings, budgets: d.settings.budgets || {} }));
         }
       } catch (e) {}
       try {
@@ -1925,11 +2035,11 @@ export default function MetonFinanceira() {
     if (!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      try { await store.set(STORAGE_KEY, JSON.stringify({ tx, bills, rules })); }
+      try { await store.set(STORAGE_KEY, JSON.stringify({ tx, bills, rules, settings })); }
       catch (e) { console.error("Falha ao salvar", e); }
     }, 600);
     return () => clearTimeout(saveTimer.current);
-  }, [tx, bills, rules, loaded]);
+  }, [tx, bills, rules, settings, loaded]);
 
   useEffect(() => {
     if (!authLoaded) return;
@@ -2048,6 +2158,39 @@ export default function MetonFinanceira() {
     [tx, bills, metrics.saldoPF, metrics.saldoPJ, wallet]
   );
 
+  // Reserva de impostos: quanto separar do faturamento PJ para o próximo tributo
+  const taxReserve = useMemo(() => {
+    const nowKey = monthKey(todayISO());
+    const pjMonth = tx.filter((t) => t.wallet === "PJ" && monthKey(t.date) === nowKey && !isTransfer(t));
+    const revenue = pjMonth.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+    const pct = Math.max(0, Math.min(100, Number(settings.taxPercent) || 0));
+    const shouldReserve = revenue * (pct / 100);
+    // tributos já pagos no mês (categoria Impostos, saídas PJ)
+    const paid = pjMonth
+      .filter((t) => t.amount < 0 && catOf(t) === "Impostos")
+      .reduce((s, t) => s - t.amount, 0);
+    // tributos já provisionados (contas a pagar da natureza Tributos, ainda em aberto)
+    const provisioned = bills
+      .filter((b) => !b.paid && b.type === "pagar" && b.wallet === "PJ" && classOf(b) === "Tributos")
+      .reduce((s, b) => s + b.amount, 0);
+    const remaining = Math.max(0, shouldReserve - paid);
+    return { revenue, pct, shouldReserve, paid, provisioned, remaining };
+  }, [tx, bills, settings.taxPercent, catOf]);
+
+  // Acompanhamento do orçamento mensal por categoria
+  const budgetStatus = useMemo(() => {
+    const budgets = settings.budgets || {};
+    const keys = Object.keys(budgets).filter((k) => budgets[k] > 0);
+    if (!keys.length) return [];
+    const nowKey = monthKey(todayISO());
+    const monthTx = filtered.filter((t) => monthKey(t.date) === nowKey && t.amount < 0 && !isTransfer(t));
+    return keys.map((c) => {
+      const spent = monthTx.filter((t) => catOf(t) === c).reduce((s, t) => s - t.amount, 0);
+      const limit = budgets[c];
+      return { category: c, spent, limit, pct: limit > 0 ? (spent / limit) * 100 : 0 };
+    }).sort((a, b) => b.pct - a.pct);
+  }, [filtered, settings.budgets, catOf]);
+
   const radarInsights = useMemo(() => {
     const out = [];
     const { savings, commit, reserve, inMonth, outMonth } = metrics;
@@ -2078,9 +2221,18 @@ export default function MetonFinanceira() {
     } else if (forecast.avgNet > 0 && reserve !== null && reserve >= 6) {
       out.push(`💡 Reserva saudável e sobra consistente. É um bom momento para se informar sobre diversificação por objetivo e prazo — sempre com orientação profissional. O Meton não indica ativos específicos.`);
     }
+    // reserva de impostos (dor específica de quem tem PJ)
+    if (settings.taxEnabled && taxReserve.revenue > 0 && taxReserve.remaining > 0) {
+      out.push(`\u{1F4CC} A PJ faturou ${brl(taxReserve.revenue)} neste mês. Separe ${brl(taxReserve.remaining)} (${taxReserve.pct}%) para os tributos antes de usar essa entrada — é o erro mais comum de quem tem CNPJ.`);
+    }
+    // orçamento estourado
+    const estourou = budgetStatus.filter((b) => b.spent > b.limit);
+    if (estourou.length) {
+      out.push(`\u{1F534} Você passou do orçamento em ${estourou.map((b) => b.category).join(", ")}. Reveja esses limites ou o ritmo de gasto.`);
+    }
     if (!out.length) out.push("Período equilibrado, sem alertas relevantes. Continue registrando tudo para a análise ficar cada vez mais precisa.");
     return out;
-  }, [metrics, forecast]);
+  }, [metrics, forecast, taxReserve, budgetStatus, settings.taxEnabled]);
 
   const upcomingBills = useMemo(() => {
     const now = new Date(todayISO());
@@ -2098,6 +2250,8 @@ export default function MetonFinanceira() {
     const q = normalize(extSearch);
     const rows = filtered.filter((t) => {
       if (extCat !== "Todas" && catOf(t) !== extCat) return false;
+      if (extFrom && t.date < extFrom) return false;
+      if (extTo && t.date > extTo) return false;
       if (q && !normalize(t.desc).includes(q)) return false;
       return true;
     });
@@ -2114,7 +2268,7 @@ export default function MetonFinanceira() {
         items: groups[k],
         total: groups[k].reduce((s, t) => s + t.amount, 0),
       }));
-  }, [filtered, extSearch, extCat, catOf]);
+  }, [filtered, extSearch, extCat, extFrom, extTo, catOf]);
 
   // contas não-recorrentes já pagas (para permitir estorno "não paguei")
   const paidBills = useMemo(
@@ -2233,7 +2387,7 @@ export default function MetonFinanceira() {
       id: txId, date: todayISO(),
       amount: b.type === "pagar" ? -Math.abs(b.amount) : Math.abs(b.amount),
       desc: b.recur === "parcelado" && b.installments ? `${b.desc} (${b.installmentIndex || 1}/${b.installments})` : b.desc,
-      wallet: b.wallet, category: b.category || null, by: currentUser?.name,
+      wallet: b.wallet, category: b.category || null, classification: classOf(b), by: currentUser?.name,
     };
     setTx((prev) => [t, ...prev]);
     setBills((prev) => prev.map((x) => {
@@ -2553,6 +2707,48 @@ export default function MetonFinanceira() {
                   )}
                 </Card>
 
+                {/* Reserva de impostos (PJ) */}
+                {settings.taxEnabled && taxReserve.revenue > 0 && (
+                  <Card className="p-5">
+                    <div className="flex items-center justify-between mb-1">
+                      <SectionTitle>Reserva de impostos (PJ)</SectionTitle>
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: NUDE, color: NUDE_DEEP }}>
+                        {taxReserve.pct}%
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-stone-500 mb-3">
+                      Sobre o faturamento PJ do mês ({brl(taxReserve.revenue)}).
+                    </p>
+                    <div className="flex items-end justify-between mb-2">
+                      <div>
+                        <div className="text-[10px] text-stone-500 font-semibold">AINDA A SEPARAR</div>
+                        <div className={`mt-mono text-2xl font-bold ${taxReserve.remaining > 0 ? "text-amber-700" : "text-green-800"}`}>
+                          {brl(taxReserve.remaining)}
+                        </div>
+                      </div>
+                      <div className="text-right text-[11px] text-stone-500">
+                        <div>Meta: <b className="mt-mono">{brl(taxReserve.shouldReserve)}</b></div>
+                        <div>Já pago: <b className="mt-mono text-green-700">{brl(taxReserve.paid)}</b></div>
+                      </div>
+                    </div>
+                    <div className="h-2 rounded-full" style={{ background: "#f5f5f4" }}>
+                      <div className="h-2 rounded-full transition-all" style={{
+                        width: `${taxReserve.shouldReserve > 0 ? Math.min(100, (taxReserve.paid / taxReserve.shouldReserve) * 100) : 0}%`,
+                        background: DARK,
+                      }} />
+                    </div>
+                    {taxReserve.provisioned > 0 && (
+                      <p className="text-[11px] text-stone-500 mt-2">
+                        Você já tem {brl(taxReserve.provisioned)} em tributos cadastrados a pagar.
+                      </p>
+                    )}
+                    <p className="text-[10px] text-stone-400 mt-2 leading-snug">
+                      Estimativa de planejamento com o percentual que você definiu em Ajustes — não substitui a apuração
+                      oficial (Simples Nacional, IRPJ, etc.).
+                    </p>
+                  </Card>
+                )}
+
                 {alertCount > 0 && (
                   <Card className="p-4 border-amber-300 bg-amber-50">
                     <div className="flex items-center gap-2 mb-2">
@@ -2610,6 +2806,44 @@ export default function MetonFinanceira() {
                     </div>
                   )}
                 </Card>
+
+                {/* Orçamento por categoria */}
+                {budgetStatus.length > 0 && (
+                  <Card className="p-5">
+                    <SectionTitle>Orçamento do mês</SectionTitle>
+                    <div className="space-y-3">
+                      {budgetStatus.map((b) => {
+                        const over = b.spent > b.limit;
+                        const near = !over && b.pct >= 80;
+                        const color = over ? "#e11d48" : near ? "#d97706" : DARK;
+                        return (
+                          <div key={b.category}>
+                            <div className="flex justify-between items-baseline text-[12px] mb-1">
+                              <span className="text-stone-700 font-medium">{b.category}</span>
+                              <span className="mt-mono text-[11px]" style={{ color }}>
+                                {brl(b.spent)} <span className="text-stone-400">/ {brl(b.limit)}</span>
+                              </span>
+                            </div>
+                            <div className="h-2 rounded-full overflow-hidden" style={{ background: "#f5f5f4" }}>
+                              <div className="h-2 rounded-full transition-all" style={{ width: `${Math.min(100, b.pct)}%`, background: color }} />
+                            </div>
+                            {over && (
+                              <div className="text-[10.5px] font-semibold mt-1" style={{ color }}>
+                                Estourou {brl(b.spent - b.limit)} acima do limite.
+                              </div>
+                            )}
+                            {near && (
+                              <div className="text-[10.5px] font-semibold mt-1" style={{ color }}>
+                                Já usou {b.pct.toFixed(0)}% do limite.
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[10px] text-stone-400 mt-3">Limites definidos em Ajustes › Orçamento mensal.</p>
+                  </Card>
+                )}
 
                 {/* Meios de pagamento */}
                 {metrics.methods.length > 0 && (
@@ -2670,7 +2904,35 @@ export default function MetonFinanceira() {
                   <option>Todas</option>
                   {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
                 </select>
+                <button onClick={() => setExtShowFilters((v) => !v)}
+                  className="rounded-xl border px-2.5 py-2 text-xs font-semibold bg-white"
+                  style={{ color: extFrom || extTo ? "white" : DARK, background: extFrom || extTo ? DARK : "white", borderColor: extFrom || extTo ? DARK : "#e7e5e4" }}
+                  aria-label="Filtrar por período">
+                  <CalendarDays size={15} />
+                </button>
               </div>
+            )}
+
+            {/* filtro por período livre */}
+            {filtered.length > 0 && extShowFilters && (
+              <Card className="p-3 mb-1">
+                <div className="flex items-end gap-2">
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-stone-500 mb-1">De</label>
+                    <input type="date" value={extFrom} onChange={(e) => setExtFrom(e.target.value)}
+                      className="w-full rounded-lg border border-stone-200 px-2 py-1.5 text-xs focus:outline-none" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-[10px] text-stone-500 mb-1">Até</label>
+                    <input type="date" value={extTo} onChange={(e) => setExtTo(e.target.value)}
+                      className="w-full rounded-lg border border-stone-200 px-2 py-1.5 text-xs focus:outline-none" />
+                  </div>
+                  <button onClick={() => { setExtFrom(""); setExtTo(""); }}
+                    className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-stone-300 text-stone-600">
+                    Limpar
+                  </button>
+                </div>
+              </Card>
             )}
 
             {filtered.length === 0 ? (
@@ -2700,10 +2962,19 @@ export default function MetonFinanceira() {
                               </div>
                               <div className="text-[11px] text-stone-400 flex items-center gap-1.5 mt-0.5 flex-wrap">
                                 {t.date.split("-").reverse().join("/")} · {t.wallet}{t.by ? ` · ${t.by.split(" ")[0]}` : ""}
-                                <select value={catOf(t)} onChange={(e) => changeCategory(t, e.target.value)}
-                                  className="text-[11px] font-semibold bg-transparent border-0 p-0 pr-4 focus:ring-0 cursor-pointer" style={{ color: DARK }}>
-                                  {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
-                                </select>
+                                {editingCatId === t.id ? (
+                                  <select autoFocus value={catOf(t)}
+                                    onChange={(e) => { changeCategory(t, e.target.value); setEditingCatId(null); }}
+                                    onBlur={() => setEditingCatId(null)}
+                                    className="text-[11px] font-semibold bg-white border border-stone-300 rounded px-1 py-0.5 focus:outline-none" style={{ color: DARK }}>
+                                    {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
+                                  </select>
+                                ) : (
+                                  <button onClick={() => setEditingCatId(t.id)}
+                                    className="text-[11px] font-semibold underline decoration-dotted" style={{ color: DARK }}>
+                                    {catOf(t)}
+                                  </button>
+                                )}
                                 <button onClick={() => toggleTransfer(t)} className="text-[10px] font-semibold underline" style={{ color: NUDE_DEEP }}>
                                   {transfer ? "não é transf." : "marcar transf."}
                                 </button>
@@ -2761,6 +3032,39 @@ export default function MetonFinanceira() {
                   <p className="text-[10px] text-stone-400 mt-2">
                     Inclui todas as parcelas restantes de contas parceladas. É o compromisso total já conhecido.
                   </p>
+
+                  {/* quebra por natureza contábil */}
+                  {(() => {
+                    const byClass = {};
+                    for (const b of upcomingBills) {
+                      if (b.type !== "pagar") continue;
+                      const c = classOf(b);
+                      byClass[c] = (byClass[c] || 0) + remainingProvision(b);
+                    }
+                    const rows = Object.entries(byClass).sort((a, b) => b[1] - a[1]);
+                    if (!rows.length) return null;
+                    const max = rows[0][1] || 1;
+                    return (
+                      <div className="mt-3 pt-3 border-t border-stone-100">
+                        <div className="text-[10px] font-bold uppercase tracking-wide text-stone-400 mb-2">
+                          A pagar por natureza
+                        </div>
+                        <div className="space-y-1.5">
+                          {rows.map(([c, v]) => (
+                            <div key={c}>
+                              <div className="flex justify-between text-[11px]">
+                                <span className="text-stone-600">{c}</span>
+                                <span className="mt-mono font-semibold text-stone-700">{brl(v)}</span>
+                              </div>
+                              <div className="h-1.5 rounded-full mt-0.5" style={{ background: "#f5f5f4" }}>
+                                <div className="h-1.5 rounded-full" style={{ width: `${(v / max) * 100}%`, background: DARK }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </Card>
                 <div className="space-y-2.5">
                   {upcomingBills.map((b) => {
@@ -2778,6 +3082,14 @@ export default function MetonFinanceira() {
                                 ? `parcela ${b.installmentIndex || 1}/${b.installments || "?"}`
                                 : (b.recur || "mensal")
                             }`}
+                          </div>
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded" style={{ background: NUDE, color: NUDE_DEEP }}>
+                              {b.category || "Outros"}
+                            </span>
+                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded" style={{ background: "#ecfdf5", color: DARK }}>
+                              {classOf(b)}
+                            </span>
                           </div>
                           {(late || soon) && (
                             <div className={`inline-flex items-center gap-1 mt-1.5 text-[11px] font-bold ${late ? "text-rose-600" : "text-amber-600"}`}>
@@ -2848,7 +3160,17 @@ export default function MetonFinanceira() {
         {/* ============ IMPORTAR ============ */}
         {tab === "importar" && (
           <>
-            <SectionTitle>Importar extrato</SectionTitle>
+            <SectionTitle>Importar extrato (manual)</SectionTitle>
+            <Card className="p-3.5" style={{ background: NUDE }}>
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: NUDE_DEEP }} />
+                <p className="text-[11px] text-stone-600 leading-relaxed">
+                  <b>O Meton não se conecta ao seu banco.</b> Você traz o extrato (arquivo ou foto) e o app organiza,
+                  categoriza e analisa. Conexão automática via Open Finance exige autorização do Banco Central
+                  e está no roteiro — ainda não existe nesta versão.
+                </p>
+              </div>
+            </Card>
             {!pending ? (
               <Card className="p-6 text-center">
                 <FileUp size={32} className="mx-auto mb-3" style={{ color: DARK }} />
@@ -3067,6 +3389,62 @@ export default function MetonFinanceira() {
               ))}
             </Card>
 
+            {/* Reserva de impostos */}
+            <SectionTitle>Reserva de impostos</SectionTitle>
+            <Card className="p-4">
+              <label className="flex items-center justify-between text-sm text-stone-700">
+                <span className="font-medium">Calcular reserva sobre o faturamento PJ</span>
+                <input type="checkbox" checked={!!settings.taxEnabled}
+                  onChange={(e) => setSettings((s) => ({ ...s, taxEnabled: e.target.checked }))}
+                  className="rounded w-5 h-5" />
+              </label>
+              {settings.taxEnabled && (
+                <div className="mt-3">
+                  <label className="block text-xs text-stone-500 mb-1">
+                    Percentual a reservar: <b style={{ color: DARK }}>{settings.taxPercent}%</b>
+                  </label>
+                  <input type="range" min="0" max="30" step="0.5" value={settings.taxPercent}
+                    onChange={(e) => setSettings((s) => ({ ...s, taxPercent: Number(e.target.value) }))}
+                    className="w-full" style={{ accentColor: DARK }} />
+                  <div className="flex justify-between text-[10px] text-stone-400"><span>0%</span><span>15%</span><span>30%</span></div>
+                  <p className="text-[10px] text-stone-500 mt-2 leading-snug">
+                    Referência: MEI tem valor fixo; Simples Nacional varia pelo anexo e faixa de receita.
+                    Use o percentual que corresponde à sua realidade — este cálculo é de planejamento, não é apuração oficial.
+                  </p>
+                </div>
+              )}
+            </Card>
+
+            {/* Orçamento por categoria */}
+            <SectionTitle>Orçamento mensal por categoria</SectionTitle>
+            <Card className="p-4">
+              <p className="text-[11px] text-stone-500 mb-3">
+                Defina um limite de gasto por categoria. Deixe em branco (ou zero) para não acompanhar.
+              </p>
+              <div className="space-y-2">
+                {CATEGORIES.filter((c) => c !== "Recebimentos").map((c) => (
+                  <div key={c} className="flex items-center justify-between gap-2">
+                    <span className="text-sm text-stone-700 flex-1 truncate">{c}</span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-[11px] text-stone-400">R$</span>
+                      <input type="number" min="0" step="10" inputMode="decimal"
+                        value={settings.budgets?.[c] ?? ""}
+                        placeholder="—"
+                        onChange={(e) => {
+                          const v = e.target.value === "" ? "" : Math.max(0, Number(e.target.value));
+                          setSettings((s) => {
+                            const b = { ...(s.budgets || {}) };
+                            if (v === "" || v === 0) delete b[c]; else b[c] = v;
+                            return { ...s, budgets: b };
+                          });
+                        }}
+                        className="w-24 rounded-lg border border-stone-300 px-2 py-1.5 text-sm text-right focus:outline-none" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
             <SectionTitle>Relatórios e dados</SectionTitle>
             <Card className="divide-y divide-stone-100">
               <button onClick={() => setShowExport(true)} className="w-full p-4 flex items-center gap-3 text-sm font-medium text-stone-700">
@@ -3177,7 +3555,7 @@ export default function MetonFinanceira() {
           {[
             { id: "radar", icon: Compass, label: "Radar" },
             { id: "extrato", icon: ListOrdered, label: "Extrato" },
-            { id: "contas", icon: CalendarClock, label: "Contas", badge: alertCount },
+            { id: "contas", icon: CalendarClock, label: "A pagar", badge: alertCount },
             { id: "importar", icon: Upload, label: "Importar" },
             { id: "ajustes", icon: Settings2, label: "Ajustes" },
           ].map(({ id, icon: Icon, label, badge }) => (
@@ -3278,7 +3656,10 @@ function AddBillModal({ onClose, onSave, initial, rules }) {
   const [installments, setInstallments] = useState(initial?.installments || 2);
   const [cat, setCat] = useState(initial?.category || "");
   const [catTouched, setCatTouched] = useState(!!initial?.category);
+  const [cls, setCls] = useState(initial?.classification || "");
+  const [clsTouched, setClsTouched] = useState(!!initial?.classification);
   const effectiveCat = catTouched ? cat : (desc.trim() ? applyRules(desc, rules || DEFAULT_RULES) : "");
+  const effectiveCls = clsTouched ? cls : suggestClassification(effectiveCat || "Outros", desc, wallet, type);
   const ok = desc.trim() && parseBRNumber(amount) !== null;
   return (
     <ModalShell title={initial ? "Editar conta" : "Nova conta"} onClose={onClose}>
@@ -3290,6 +3671,17 @@ function AddBillModal({ onClose, onSave, initial, rules }) {
           <select className={inputCls} value={effectiveCat || "Outros"} onChange={(e) => { setCat(e.target.value); setCatTouched(true); }}>
             {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
           </select>
+        </div>
+        <div>
+          <label className="block text-xs text-stone-500 mb-1 pl-1">
+            Classificação {!clsTouched && desc.trim() && <span style={{ color: NUDE_DEEP }}>(sugerida)</span>}
+          </label>
+          <select className={inputCls} value={effectiveCls} onChange={(e) => { setCls(e.target.value); setClsTouched(true); }}>
+            {CLASSIFICATIONS.map((c) => <option key={c}>{c}</option>)}
+          </select>
+          <p className="text-[10px] text-stone-400 mt-1 pl-1 leading-snug">
+            Natureza contábil: separa custo fixo, variável, tributo e retirada — usado no resumo por natureza.
+          </p>
         </div>
         <label className="block text-xs text-stone-500 -mb-2 pl-1">Data de vencimento</label>
         <input className={inputCls} type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} />
@@ -3329,6 +3721,7 @@ function AddBillModal({ onClose, onSave, initial, rules }) {
           onClick={() => onSave({
             desc: desc.trim(), amount: Math.abs(parseBRNumber(amount)), dueDate, type, wallet,
             category: effectiveCat || "Outros",
+            classification: effectiveCls,
             recur, recurring: recur !== "nao",
             installments: recur === "parcelado" ? installments : undefined,
             installmentIndex: recur === "parcelado" ? (initial?.installmentIndex || 1) : undefined,
