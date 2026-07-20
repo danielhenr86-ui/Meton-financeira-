@@ -174,6 +174,7 @@ const DEFAULT_RULES = [
   // ----- Investimentos -----
   { keyword: "cdb", category: "Investimentos" }, { keyword: "tesouro", category: "Investimentos" },
   { keyword: "rendimento", category: "Investimentos" }, { keyword: "aplicacao", category: "Investimentos" },
+  { keyword: "resgate", category: "Investimentos" }, { keyword: "rdb", category: "Investimentos" },
   { keyword: "lci", category: "Investimentos" }, { keyword: "lca", category: "Investimentos" },
   { keyword: "fundo", category: "Investimentos" }, { keyword: "xp investimentos", category: "Investimentos" },
   { keyword: "rico", category: "Investimentos" }, { keyword: "nuinvest", category: "Investimentos" },
@@ -186,7 +187,9 @@ const STOPWORDS = new Set([
 ]);
 
 // palavras que indicam transferência entre as carteiras da mesma pessoa (PF<->PJ)
-const TRANSFER_KEYWORDS = ["prolabore", "pro labore", "transferencia entre contas", "transf entre contas", "transferencia propria", "entre carteiras"];
+// ou movimento entre a conta e aplicações próprias (caixinha/RDB/CDB): não é receita nem despesa
+const TRANSFER_KEYWORDS = ["prolabore", "pro labore", "transferencia entre contas", "transf entre contas", "transferencia propria", "entre carteiras",
+  "resgate rdb", "aplicacao rdb", "resgate cdb", "aplicacao cdb", "resgate planejado", "aplicacao planejada", "dinheiro guardado", "resgate caixinha", "aplicacao caixinha"];
 
 // detecta se a descrição sugere transferência interna
 function looksLikeTransfer(desc) {
@@ -224,6 +227,28 @@ function remainingProvision(b) {
   return b.amount;
 }
 
+// quanto desta conta cai dentro da janela [from, to]? (conta ocorrências de recorrência)
+function provisionInWindow(b, fromISO, toISO) {
+  const recur = b.recur || (b.recurring ? "mensal" : "nao");
+  const from = new Date(fromISO + "T00:00:00");
+  const to = new Date(toISO + "T23:59:59");
+  let d = new Date(b.dueDate + "T12:00:00");
+  if (isNaN(d)) return 0;
+  if (recur === "nao") return d >= from && d <= to ? b.amount : 0;
+  let remaining = recur === "parcelado"
+    ? Math.max(0, (b.installments || 1) - ((b.installmentIndex || 1) - 1))
+    : Infinity;
+  let total = 0, guard = 0;
+  while (d <= to && remaining > 0 && guard < 120) {
+    if (d >= from) total += b.amount;
+    if (recur === "quinzenal") d.setDate(d.getDate() + 15);
+    else if (recur === "anual") d.setFullYear(d.getFullYear() + 1);
+    else d.setMonth(d.getMonth() + 1); // mensal e parcelado
+    remaining--; guard++;
+  }
+  return total;
+}
+
 /* ---------- helpers ---------- */
 
 const brl = (v) =>
@@ -242,7 +267,8 @@ const monthLabel = (key) => {
 };
 const monthFull = (key) => {
   const [y, m] = key.split("-");
-  return `${MONTH_NAMES[parseInt(m, 10) - 1]} de ${y}`;
+  const name = MONTH_NAMES[parseInt(m, 10) - 1];
+  return name ? `${name} de ${y}` : `⚠ Data inválida (corrija em Ajustes)`;
 };
 const todayISO = () => new Date().toISOString().slice(0, 10);
 const prevMonthKey = (key) => {
@@ -380,10 +406,16 @@ function parseOFX(text) {
       return m ? m[1].trim() : "";
     };
     const dt = get("DTPOSTED").slice(0, 8);
-    const amt = parseBRNumber(get("TRNAMT"));
+    let amt = parseBRNumber(get("TRNAMT"));
+    const type = get("TRNTYPE").toUpperCase();
     const desc = get("MEMO") || get("NAME") || "Sem descrição";
     if (dt.length === 8 && amt !== null) {
-      out.push({ date: `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`, amount: amt, desc });
+      // o tipo declarado no arquivo garante o sinal, mesmo se o valor vier sem sinal
+      if (type === "DEBIT") amt = -Math.abs(amt);
+      if (type === "CREDIT") amt = Math.abs(amt);
+      const iso = `${dt.slice(0, 4)}-${dt.slice(4, 6)}-${dt.slice(6, 8)}`;
+      if (!isValidISODate(iso)) continue;
+      out.push({ date: iso, amount: amt, desc });
     }
   }
   return out;
@@ -461,9 +493,19 @@ async function parsePDF(file) {
 }
 
 /* transforma linhas de texto (PDF ou OCR) em lançamentos, por heurística */
+// valida uma data ISO de verdade (mês 1-12, dia válido no mês, ano plausível)
+function isValidISODate(iso) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso || "")) return false;
+  const [y, m, d] = iso.split("-").map(Number);
+  if (y < 2000 || y > 2099 || m < 1 || m > 12 || d < 1) return false;
+  const dim = new Date(y, m, 0).getDate();
+  return d <= dim;
+}
+
 function linesToTx(lines) {
   const out = [];
-  const dateRe = /(\d{2})[\/.\-](\d{2})(?:[\/.\-](\d{2,4}))?/;
+  // data NÃO pode estar colada em outros dígitos (evita casar dentro de CPF/CNPJ/nº de conta)
+  const dateRe = /(?<!\d)(\d{2})[\/.\-](\d{2})(?:[\/.\-](\d{2,4}))?(?!\d)/;
   const valRe = /(-?\s?R?\$?\s?\d{1,3}(?:\.\d{3})*,\d{2})\s*([CD])?/g;
   const year = new Date().getFullYear();
   for (const raw of lines) {
@@ -477,8 +519,17 @@ function linesToTx(lines) {
     if (amt === null) continue;
     if (last[2] === "D") amt = -Math.abs(amt);
     if (last[2] === "C") amt = Math.abs(amt);
+    // sinal pelo texto quando não há C/D nem sinal explícito (comum em recibo/PDF)
+    if (!last[2] && amt > 0) {
+      const nl = normalize(line);
+      if (/(enviad|pagamento|pago|compra|debito|saida|tarifa|boleto efetuado|saque)/.test(nl) &&
+          !/(recebid|credito em conta|deposito|entrada)/.test(nl)) {
+        amt = -amt;
+      }
+    }
     let yy = dm[3] ? (dm[3].length === 2 ? "20" + dm[3] : dm[3]) : String(year);
     const iso = `${yy}-${dm[2]}-${dm[1]}`;
+    if (!isValidISODate(iso)) continue; // rejeita datas impossíveis (ex.: vindas de CPF mascarado)
     let desc = line.replace(dateRe, "").replace(valRe, "").replace(/\s+/g, " ").trim();
     if (desc.length < 2) desc = "Lançamento";
     if (amt !== 0) out.push({ date: iso, amount: amt, desc: desc.slice(0, 60) });
@@ -1961,6 +2012,8 @@ export default function MetonFinanceira() {
   const [extTo, setExtTo] = useState("");
   const [extShowFilters, setExtShowFilters] = useState(false);
   const [editingCatId, setEditingCatId] = useState(null);
+  const [provScope, setProvScope] = useState("mes");
+  const [expandedGroups, setExpandedGroups] = useState({});
   const contactsTimer = useRef(null);
   const fileRef = useRef(null);
   const photoRef = useRef(null);
@@ -2076,9 +2129,9 @@ export default function MetonFinanceira() {
     const saldoPF = tx.filter((t) => t.wallet === "PF").reduce((s, t) => s + t.amount, 0);
     const saldoPJ = tx.filter((t) => t.wallet === "PJ").reduce((s, t) => s + t.amount, 0);
 
-    // no consolidado "Tudo", transferências entre carteiras não contam como fluxo
-    // (é só dinheiro mudando de bolso). Em PF/PJ isolado, contam normalmente.
-    const flowTx = wallet === "Tudo" ? filtered.filter((t) => !isTransfer(t)) : filtered;
+    // transferências internas (PF<->PJ, caixinha/RDB) nunca são receita nem despesa:
+    // afetam o saldo, mas ficam fora do fluxo em qualquer visão.
+    const flowTx = filtered.filter((t) => !isTransfer(t));
 
     const monthTx = flowTx.filter((t) => monthKey(t.date) === nowKey);
     const inMonth = monthTx.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0);
@@ -2481,6 +2534,17 @@ export default function MetonFinanceira() {
     } catch (e) {
       setToast("Não consegui ler o backup: " + (e?.message || "arquivo inválido"));
     }
+  };
+
+  const cleanInvalidDates = () => {
+    const bad = tx.filter((t) => !isValidISODate(t.date));
+    if (!bad.length) { setToast("Nenhum lançamento com data inválida. Tudo certo."); return; }
+    const soma = bad.reduce((s, t) => s + t.amount, 0);
+    if (!window.confirm(
+      `Encontrei ${bad.length} lançamento(s) com data inválida (ex.: vindos de leitura de PDF/foto com erro), somando ${brl(soma)} nos seus totais.\n\nRemover todos? Os lançamentos com data válida não serão tocados.`
+    )) return;
+    setTx((p) => p.filter((t) => isValidISODate(t.date)));
+    setToast(`${bad.length} lançamento(s) com data inválida removido(s). Seus totais foram corrigidos.`);
   };
 
   const wipeAll = () => {
@@ -2950,7 +3014,7 @@ export default function MetonFinanceira() {
                       </span>
                     </div>
                     <Card className="divide-y divide-stone-100">
-                      {g.items.map((t) => {
+                      {(expandedGroups[g.key] ? g.items : g.items.slice(0, 20)).map((t) => {
                         const transfer = isTransfer(t);
                         return (
                           <div key={t.id} className="p-3.5 flex items-start gap-3">
@@ -2991,6 +3055,13 @@ export default function MetonFinanceira() {
                           </div>
                         );
                       })}
+                      {!expandedGroups[g.key] && g.items.length > 20 && (
+                        <button
+                          onClick={() => setExpandedGroups((p) => ({ ...p, [g.key]: true }))}
+                          className="w-full py-2.5 text-xs font-bold" style={{ color: DARK }}>
+                          Mostrar mais {g.items.length - 20} lançamento(s) de {g.label}
+                        </button>
+                      )}
                     </Card>
                   </div>
                 ))}
@@ -3012,25 +3083,67 @@ export default function MetonFinanceira() {
               <Card className="p-6 text-center text-sm text-stone-400">Nenhuma conta cadastrada. Cadastre o DAS, aluguel, honorários a receber…</Card>
             ) : (
               <>
-                {/* Provisão: total futuro a pagar/receber, incluindo parcelas restantes */}
+                {/* Provisão: total futuro a pagar/receber, com filtro de período */}
                 <Card className="p-4">
-                  <SectionTitle>Provisão futura</SectionTitle>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="rounded-xl p-3" style={{ background: "#fef2f2" }}>
-                      <div className="text-[11px] font-semibold text-rose-700">A pagar</div>
-                      <div className="mt-mono text-base font-bold text-rose-800 mt-1">
-                        {brl(upcomingBills.filter((b) => b.type === "pagar").reduce((s, b) => s + remainingProvision(b), 0))}
-                      </div>
-                    </div>
-                    <div className="rounded-xl p-3" style={{ background: "#f0fdf4" }}>
-                      <div className="text-[11px] font-semibold text-green-700">A receber</div>
-                      <div className="mt-mono text-base font-bold text-green-800 mt-1">
-                        {brl(upcomingBills.filter((b) => b.type === "receber").reduce((s, b) => s + remainingProvision(b), 0))}
-                      </div>
+                  <div className="flex items-center justify-between mb-2">
+                    <SectionTitle>Provisão</SectionTitle>
+                    <div className="flex gap-1">
+                      {[["mes", "Este mês"], ["prox", "Próx. mês"], ["90d", "90 dias"], ["tudo", "Tudo"]].map(([v, l]) => (
+                        <button key={v} onClick={() => setProvScope(v)}
+                          className="px-2 py-1 rounded-lg text-[10px] font-bold"
+                          style={provScope === v ? { background: DARK, color: "white" } : { background: NUDE, color: NUDE_DEEP }}>
+                          {l}
+                        </button>
+                      ))}
                     </div>
                   </div>
+                  {(() => {
+                    const today = new Date(todayISO() + "T12:00:00");
+                    let from, to, label;
+                    if (provScope === "mes") {
+                      from = todayISO().slice(0, 8) + "01";
+                      to = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0, 10);
+                      label = "vencimentos deste mês";
+                    } else if (provScope === "prox") {
+                      from = new Date(today.getFullYear(), today.getMonth() + 1, 1).toISOString().slice(0, 10);
+                      to = new Date(today.getFullYear(), today.getMonth() + 2, 0).toISOString().slice(0, 10);
+                      label = "vencimentos do próximo mês";
+                    } else if (provScope === "90d") {
+                      from = todayISO();
+                      const l90 = new Date(today); l90.setDate(l90.getDate() + 90);
+                      to = l90.toISOString().slice(0, 10);
+                      label = "próximos 90 dias";
+                    } else {
+                      from = null; to = null; label = "todas as parcelas conhecidas";
+                    }
+                    const calc = (type) => upcomingBills
+                      .filter((b) => b.type === type)
+                      .reduce((s, b) => s + (from ? provisionInWindow(b, from, to) : remainingProvision(b)), 0);
+                    const pagar = calc("pagar");
+                    const receber = calc("receber");
+                    return (
+                      <>
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="rounded-xl p-3" style={{ background: "#fef2f2" }}>
+                            <div className="text-[11px] font-semibold text-rose-700">A pagar</div>
+                            <div className="mt-mono text-base font-bold text-rose-800 mt-1">{brl(pagar)}</div>
+                          </div>
+                          <div className="rounded-xl p-3" style={{ background: "#f0fdf4" }}>
+                            <div className="text-[11px] font-semibold text-green-700">A receber</div>
+                            <div className="mt-mono text-base font-bold text-green-800 mt-1">{brl(receber)}</div>
+                          </div>
+                        </div>
+                        <div className="flex justify-between text-[11px] mt-2 px-0.5">
+                          <span className="text-stone-500">Saldo do período ({label})</span>
+                          <span className={`mt-mono font-bold ${receber - pagar >= 0 ? "text-green-700" : "text-rose-600"}`}>
+                            {brl(receber - pagar)}
+                          </span>
+                        </div>
+                      </>
+                    );
+                  })()}
                   <p className="text-[10px] text-stone-400 mt-2">
-                    Inclui todas as parcelas restantes de contas parceladas. É o compromisso total já conhecido.
+                    Recorrências e parcelas contam apenas as ocorrências que caem no período escolhido. "Tudo" soma todas as parcelas restantes.
                   </p>
 
                   {/* quebra por natureza contábil */}
@@ -3458,6 +3571,9 @@ export default function MetonFinanceira() {
               <button onClick={() => backupRef.current?.click()} className="w-full p-4 flex items-center gap-3 text-sm font-medium text-stone-700">
                 <Upload size={16} style={{ color: DARK }} /> Importar backup (JSON)
               </button>
+              <button onClick={cleanInvalidDates} className="w-full p-4 flex items-center gap-3 text-sm font-medium text-stone-700">
+                <AlertTriangle size={16} style={{ color: "#d97706" }} /> Corrigir lançamentos com data inválida
+              </button>
               <button onClick={loadSample} className="w-full p-4 flex items-center gap-3 text-sm font-medium text-stone-700">
                 <RotateCcw size={16} style={{ color: DARK }} /> Recarregar dados de exemplo
               </button>
@@ -3710,11 +3826,29 @@ function AddBillModal({ onClose, onSave, initial, rules }) {
           </select>
         </div>
         {recur === "parcelado" && (
-          <div className="flex items-center gap-2 pl-1">
-            <span className="text-sm text-stone-600">Nº de parcelas:</span>
-            <input type="number" min="2" max="60" value={installments}
-              onChange={(e) => setInstallments(Math.max(2, Math.min(60, parseInt(e.target.value) || 2)))}
-              className="w-20 rounded-xl border border-stone-300 px-2 py-1.5 text-sm focus:outline-none" />
+          <div className="pl-1">
+            <label className="block text-xs text-stone-500 mb-1">Número de parcelas</label>
+            <div className="flex items-center gap-2">
+              <button type="button"
+                onClick={() => setInstallments((v) => Math.max(2, (parseInt(v) || 2) - 1))}
+                className="w-10 h-10 rounded-xl border border-stone-300 text-lg font-bold text-stone-600 active:bg-stone-100">−</button>
+              <input
+                type="text" inputMode="numeric" pattern="[0-9]*"
+                value={installments}
+                onChange={(e) => setInstallments(e.target.value.replace(/\D/g, "").slice(0, 2))}
+                onBlur={() => setInstallments((v) => {
+                  const n = parseInt(v) || 2;
+                  return Math.max(2, Math.min(60, n));
+                })}
+                className="w-16 h-10 rounded-xl border border-stone-300 text-center text-base font-bold focus:outline-none"
+                style={{ color: DARK }} />
+              <button type="button"
+                onClick={() => setInstallments((v) => Math.min(60, (parseInt(v) || 2) + 1))}
+                className="w-10 h-10 rounded-xl border border-stone-300 text-lg font-bold text-stone-600 active:bg-stone-100">+</button>
+              <span className="text-xs text-stone-500 ml-1">
+                {parseInt(installments) >= 2 ? `${installments}x de ${parseBRNumber(amount) !== null ? brl(Math.abs(parseBRNumber(amount))) : "—"}` : "de 2 a 60"}
+              </span>
+            </div>
           </div>
         )}
         <button disabled={!ok}
@@ -3723,7 +3857,7 @@ function AddBillModal({ onClose, onSave, initial, rules }) {
             category: effectiveCat || "Outros",
             classification: effectiveCls,
             recur, recurring: recur !== "nao",
-            installments: recur === "parcelado" ? installments : undefined,
+            installments: recur === "parcelado" ? Math.max(2, Math.min(60, parseInt(installments) || 2)) : undefined,
             installmentIndex: recur === "parcelado" ? (initial?.installmentIndex || 1) : undefined,
           })}
           className="w-full py-2.5 rounded-xl text-white font-semibold text-sm disabled:opacity-40" style={{ background: DARK }}>
