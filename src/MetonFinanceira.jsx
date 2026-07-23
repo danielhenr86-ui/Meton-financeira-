@@ -6,7 +6,7 @@ import {
   FileUp, Download, RotateCcw, X, ChevronRight, BellRing, LogOut, Mail,
   Lock, User, Eye, EyeOff, FileText, Share2, Copy, Users, ShieldCheck,
   KeyRound, Phone, Save, CheckCheck, PlayCircle, ChevronLeft, Sparkles,
-  Camera, Pencil, Search, ArrowLeftRight, CalendarDays
+  Camera, Pencil, Search, ArrowLeftRight, CalendarDays, ClipboardList, Target
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend,
@@ -736,6 +736,53 @@ function buildPeriodReport({ from, to, tx, bills, catOf, userName }) {
     `Conteúdo educacional. Não constitui recomendação de investimento.`,
   ];
   return { inn, out, result: inn - out, count: rows.length, text: lines.join("\n") };
+}
+
+/* ---------- DRE gerencial (a partir da classificação contábil) ---------- */
+
+function buildDRE({ tx, mKey, wallet, catOf }) {
+  const rows = tx.filter((t) => monthKey(t.date) === mKey && (wallet === "Tudo" || t.wallet === wallet));
+  const flow = rows.filter((t) => !isTransfer(t));
+  const clsOf = (t) => classOf(t, catOf(t));
+
+  const sumBy = (pred) => flow.filter(pred).reduce((s, t) => s + Math.abs(t.amount), 0);
+
+  const receitaOp = sumBy((t) => t.amount > 0 && clsOf(t) === "Receita operacional");
+  const outrasEntradas = sumBy((t) => t.amount > 0 && clsOf(t) !== "Receita operacional");
+  const receitaTotal = receitaOp + outrasEntradas;
+
+  const custoFixo = sumBy((t) => t.amount < 0 && clsOf(t) === "Custo fixo");
+  const custoVar = sumBy((t) => t.amount < 0 && clsOf(t) === "Custo variável");
+  const lucroBruto = receitaTotal - custoFixo - custoVar;
+
+  const despOp = sumBy((t) => t.amount < 0 && clsOf(t) === "Despesa operacional");
+  const despAdm = sumBy((t) => t.amount < 0 && clsOf(t) === "Despesa administrativa");
+  const resultadoOp = lucroBruto - despOp - despAdm;
+
+  const tributos = sumBy((t) => t.amount < 0 && clsOf(t) === "Tributos");
+  const despFin = sumBy((t) => t.amount < 0 && clsOf(t) === "Despesa financeira");
+  const pessoal = sumBy((t) => t.amount < 0 && clsOf(t) === "Pessoal (PF)");
+  const invest = sumBy((t) => t.amount < 0 && clsOf(t) === "Investimento");
+  const naoClass = sumBy((t) => t.amount < 0 && clsOf(t) === "Não classificado");
+
+  const resultado = resultadoOp - tributos - despFin - pessoal - invest - naoClass;
+
+  // retiradas: transferências de pró-labore (informativo, abaixo da linha)
+  const retiradas = rows
+    .filter((t) => isTransfer(t) && t.amount < 0 && /prolabore|pro labore/.test(normalize(t.desc)))
+    .reduce((s, t) => s + Math.abs(t.amount), 0);
+
+  const pct = (v) => (receitaTotal > 0 ? (v / receitaTotal) * 100 : null);
+
+  return {
+    receitaOp, outrasEntradas, receitaTotal,
+    custoFixo, custoVar, lucroBruto,
+    despOp, despAdm, resultadoOp,
+    tributos, despFin, pessoal, invest, naoClass,
+    resultado, retiradas,
+    margemBruta: pct(lucroBruto), margemOp: pct(resultadoOp), margemLiq: pct(resultado),
+    count: flow.length,
+  };
 }
 
 /* ---------- previsão de fluxo de caixa (retrospecto + contas futuras) ---------- */
@@ -1988,6 +2035,7 @@ export default function MetonFinanceira() {
   const [rules, setRules] = useState(DEFAULT_RULES);
   // configurações do usuário: reserva de impostos e orçamentos por categoria
   const [settings, setSettings] = useState({ taxPercent: 6, taxEnabled: true, budgets: {} });
+  const [goals, setGoals] = useState([]);
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState("radar");
   const [wallet, setWallet] = useState("Tudo");
@@ -1999,6 +2047,8 @@ export default function MetonFinanceira() {
   const [editingBill, setEditingBill] = useState(null);
   const [showReport, setShowReport] = useState(false);
   const [showCompare, setShowCompare] = useState(false);
+  const [showDRE, setShowDRE] = useState(false);
+  const [showGoals, setShowGoals] = useState(false);
   const [showAddUser, setShowAddUser] = useState(false);
   const [contacts, setContacts] = useState([]);
   const [showChangePass, setShowChangePass] = useState(false);
@@ -2065,6 +2115,7 @@ export default function MetonFinanceira() {
           setBills(d.bills || []);
           setRules(d.rules?.length ? d.rules : DEFAULT_RULES);
           if (d.settings) setSettings((s) => ({ ...s, ...d.settings, budgets: d.settings.budgets || {} }));
+          if (Array.isArray(d.goals)) setGoals(d.goals);
         }
       } catch (e) {}
       try {
@@ -2088,11 +2139,11 @@ export default function MetonFinanceira() {
     if (!loaded) return;
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      try { await store.set(STORAGE_KEY, JSON.stringify({ tx, bills, rules, settings })); }
+      try { await store.set(STORAGE_KEY, JSON.stringify({ tx, bills, rules, settings, goals })); }
       catch (e) { console.error("Falha ao salvar", e); }
     }, 600);
     return () => clearTimeout(saveTimer.current);
-  }, [tx, bills, rules, settings, loaded]);
+  }, [tx, bills, rules, settings, goals, loaded]);
 
   useEffect(() => {
     if (!authLoaded) return;
@@ -2688,16 +2739,21 @@ export default function MetonFinanceira() {
                   <div className="mt-mono text-base font-semibold mt-1">{brl(metrics.outMonth)}</div>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-2 mt-4">
+              <div className="grid grid-cols-3 gap-2 mt-4">
                 <button onClick={() => setShowReport(true)}
-                  className="py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-1.5"
+                  className="py-2.5 rounded-xl font-semibold text-[13px] flex items-center justify-center gap-1"
                   style={{ background: LIGHT, color: DARK }}>
-                  <FileText size={15} /> Relatório
+                  <FileText size={14} /> Relatório
+                </button>
+                <button onClick={() => setShowDRE(true)}
+                  className="py-2.5 rounded-xl font-semibold text-[13px] flex items-center justify-center gap-1 border"
+                  style={{ borderColor: LIGHT, color: LIGHT }}>
+                  <ClipboardList size={14} /> DRE
                 </button>
                 <button onClick={() => setShowCompare(true)}
-                  className="py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-1.5 border"
+                  className="py-2.5 rounded-xl font-semibold text-[13px] flex items-center justify-center gap-1 border"
                   style={{ borderColor: LIGHT, color: LIGHT }}>
-                  <TrendingUp size={15} /> Comparar
+                  <TrendingUp size={14} /> Comparar
                 </button>
               </div>
             </>
@@ -2908,6 +2964,58 @@ export default function MetonFinanceira() {
                     <p className="text-[10px] text-stone-400 mt-3">Limites definidos em Ajustes › Orçamento mensal.</p>
                   </Card>
                 )}
+
+                {/* Metas */}
+                <Card className="p-5">
+                  <div className="flex items-center justify-between mb-1">
+                    <SectionTitle>Metas</SectionTitle>
+                    <button onClick={() => setShowGoals(true)} className="text-xs font-semibold flex items-center gap-1" style={{ color: DARK }}>
+                      <Target size={13} /> {goals.length ? "Gerenciar" : "Criar meta"}
+                    </button>
+                  </div>
+                  {goals.length === 0 ? (
+                    <p className="text-[12px] text-stone-400">
+                      Defina objetivos (reserva, carro, viagem, curso…) e acompanhe o progresso com projeção automática.
+                    </p>
+                  ) : (
+                    <div className="space-y-3.5">
+                      {goals.map((g) => {
+                        const pct = g.target > 0 ? Math.min(100, (g.saved / g.target) * 100) : 0;
+                        const falta = Math.max(0, g.target - g.saved);
+                        let proj = null;
+                        if (falta > 0 && forecast.avgNet > 0) {
+                          const meses = Math.ceil(falta / forecast.avgNet);
+                          const d = new Date(); d.setMonth(d.getMonth() + meses);
+                          proj = { meses, label: `${MONTH_NAMES[d.getMonth()].slice(0, 3)}/${d.getFullYear()}` };
+                        }
+                        const late = g.deadline && proj && new Date(g.deadline) < new Date(new Date().setMonth(new Date().getMonth() + proj.meses));
+                        return (
+                          <div key={g.id}>
+                            <div className="flex justify-between items-baseline mb-1">
+                              <span className="text-[13px] font-medium text-stone-700">{g.name}</span>
+                              <span className="mt-mono text-[11px] text-stone-500">{brl(g.saved)} / {brl(g.target)}</span>
+                            </div>
+                            <div className="h-2 rounded-full overflow-hidden" style={{ background: "#f5f5f4" }}>
+                              <div className="h-2 rounded-full" style={{ width: `${pct}%`, background: pct >= 100 ? "#15803d" : DARK }} />
+                            </div>
+                            <div className="flex justify-between text-[10.5px] mt-1 text-stone-400">
+                              <span>{pct.toFixed(0)}% · falta {brl(falta)}</span>
+                              {pct >= 100 ? (
+                                <span className="font-bold" style={{ color: "#15803d" }}>Concluída 🎉</span>
+                              ) : proj ? (
+                                <span style={late ? { color: "#d97706", fontWeight: 700 } : {}}>
+                                  no ritmo atual: ~{proj.meses} mês(es) ({proj.label}){late ? " · passa do prazo" : ""}
+                                </span>
+                              ) : (
+                                <span>sem sobra média para projetar</span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </Card>
 
                 {/* Meios de pagamento */}
                 {metrics.methods.length > 0 && (
@@ -3645,6 +3753,12 @@ export default function MetonFinanceira() {
       {showCompare && (
         <CompareModal tx={tx} catOf={catOf} onClose={() => setShowCompare(false)} />
       )}
+      {showDRE && (
+        <DREModal tx={tx} catOf={catOf} onClose={() => setShowDRE(false)} setToast={setToast} />
+      )}
+      {showGoals && (
+        <GoalsModal goals={goals} setGoals={setGoals} onClose={() => setShowGoals(false)} setToast={setToast} />
+      )}
       {showChangePass && (
         <ChangePasswordModal user={currentUser} onClose={() => setShowChangePass(false)} onSave={changeMyPassword} setToast={setToast} />
       )}
@@ -3865,6 +3979,214 @@ function AddBillModal({ onClose, onSave, initial, rules }) {
         </button>
       </div>
     </ModalShell>
+  );
+}
+
+function GoalsModal({ goals, setGoals, onClose, setToast }) {
+  const [name, setName] = useState("");
+  const [target, setTarget] = useState("");
+  const [saved, setSaved] = useState("");
+  const [deadline, setDeadline] = useState("");
+  const [editingId, setEditingId] = useState(null);
+
+  const reset = () => { setName(""); setTarget(""); setSaved(""); setDeadline(""); setEditingId(null); };
+  const ok = name.trim() && parseBRNumber(target) !== null && parseBRNumber(target) > 0;
+
+  const save = () => {
+    const g = {
+      id: editingId || uid(),
+      name: name.trim(),
+      target: Math.abs(parseBRNumber(target)),
+      saved: Math.max(0, Math.abs(parseBRNumber(saved) ?? 0) || 0),
+      deadline: deadline || null,
+    };
+    setGoals((p) => editingId ? p.map((x) => (x.id === editingId ? g : x)) : [...p, g]);
+    setToast(editingId ? "Meta atualizada." : "Meta criada.");
+    reset();
+  };
+
+  const aporte = (g) => {
+    const v = window.prompt(`Quanto você quer aportar em "${g.name}"?\n(valor em reais; use negativo para retirar)`);
+    if (v === null) return;
+    const n = parseBRNumber(v);
+    if (n === null) { setToast("Valor inválido."); return; }
+    setGoals((p) => p.map((x) => (x.id === g.id ? { ...x, saved: Math.max(0, x.saved + n) } : x)));
+    setToast(n >= 0 ? `Aporte de ${brl(n)} registrado.` : `Retirada de ${brl(-n)} registrada.`);
+  };
+
+  return (
+    <ModalShell title="Metas" onClose={onClose}>
+      <div className="space-y-3">
+        {goals.length > 0 && (
+          <div className="space-y-2">
+            {goals.map((g) => (
+              <div key={g.id} className="rounded-xl p-3 flex items-center gap-2" style={{ background: NUDE }}>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate">{g.name}</div>
+                  <div className="text-[11px] text-stone-500 mt-mono">
+                    {brl(g.saved)} / {brl(g.target)}{g.deadline ? ` · até ${g.deadline.split("-").reverse().join("/")}` : ""}
+                  </div>
+                </div>
+                <button onClick={() => aporte(g)} className="text-[11px] font-bold px-2 py-1 rounded-lg text-white" style={{ background: DARK }}>+ Aporte</button>
+                <button onClick={() => { setEditingId(g.id); setName(g.name); setTarget(String(g.target).replace(".", ",")); setSaved(String(g.saved).replace(".", ",")); setDeadline(g.deadline || ""); }}
+                  className="p-1.5 text-stone-500"><Pencil size={14} /></button>
+                <button onClick={() => { if (window.confirm(`Excluir a meta "${g.name}"?`)) { setGoals((p) => p.filter((x) => x.id !== g.id)); if (editingId === g.id) reset(); } }}
+                  className="p-1.5 text-stone-400"><Trash2 size={14} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="pt-1 border-t border-stone-100">
+          <div className="text-xs font-bold text-stone-500 mb-2">{editingId ? "Editar meta" : "Nova meta"}</div>
+          <div className="space-y-2.5">
+            <input className={inputCls} placeholder="Nome (ex: Reserva de emergência)" value={name} onChange={(e) => setName(e.target.value)} />
+            <div className="flex gap-2">
+              <input className={inputCls} placeholder="Valor da meta" inputMode="decimal" value={target} onChange={(e) => setTarget(e.target.value)} />
+              <input className={inputCls} placeholder="Já guardado" inputMode="decimal" value={saved} onChange={(e) => setSaved(e.target.value)} />
+            </div>
+            <div>
+              <label className="block text-xs text-stone-500 mb-1 pl-1">Prazo (opcional)</label>
+              <input className={inputCls} type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} />
+            </div>
+            <div className="flex gap-2">
+              {editingId && (
+                <button onClick={reset} className="flex-1 py-2.5 rounded-xl border border-stone-300 text-stone-600 font-semibold text-sm">Cancelar</button>
+              )}
+              <button disabled={!ok} onClick={save}
+                className="flex-1 py-2.5 rounded-xl text-white font-semibold text-sm disabled:opacity-40" style={{ background: DARK }}>
+                {editingId ? "Salvar alterações" : "Criar meta"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function DREModal({ tx, catOf, onClose, setToast }) {
+  const months = useMemo(() => {
+    const s = new Set(tx.filter((t) => isValidISODate(t.date)).map((t) => monthKey(t.date)));
+    return [...s].sort((a, b) => b.localeCompare(a));
+  }, [tx]);
+  const [mKey, setMKey] = useState(months[0] || monthKey(todayISO()));
+  const [w, setW] = useState("PJ");
+  const dre = useMemo(() => buildDRE({ tx, mKey, wallet: w, catOf }), [tx, mKey, w, catOf]);
+
+  const fmtPct = (p) => (p === null ? "—" : `${p.toFixed(1)}%`);
+  const Line = ({ label, value, sign = "", bold = false, pct = null, indent = false, color }) => (
+    <div className={`flex items-baseline justify-between py-1.5 ${bold ? "border-t border-stone-200 mt-1 pt-2" : ""}`}>
+      <span className={`${bold ? "font-bold text-stone-800" : "text-stone-600"} text-[13px] ${indent ? "pl-3" : ""}`}>{label}</span>
+      <span className="text-right">
+        <span className={`mt-mono text-[13px] ${bold ? "font-bold" : "font-medium"}`} style={{ color: color || (bold ? DARK : "#57534e") }}>
+          {sign}{brl(value)}
+        </span>
+        {pct !== null && <span className="text-[10px] text-stone-400 ml-1.5">{fmtPct(pct)}</span>}
+      </span>
+    </div>
+  );
+
+  const copyDRE = async () => {
+    const l = [
+      `DRE GERENCIAL — ${monthFull(mKey)} — ${w}`,
+      ``,
+      `Receita operacional: ${brl(dre.receitaOp)}`,
+      dre.outrasEntradas > 0 ? `Outras entradas: ${brl(dre.outrasEntradas)}` : null,
+      `RECEITA TOTAL: ${brl(dre.receitaTotal)}`,
+      `(-) Custo fixo: ${brl(dre.custoFixo)}`,
+      `(-) Custo variável: ${brl(dre.custoVar)}`,
+      `LUCRO BRUTO: ${brl(dre.lucroBruto)} (${fmtPct(dre.margemBruta)})`,
+      `(-) Despesa operacional: ${brl(dre.despOp)}`,
+      `(-) Despesa administrativa: ${brl(dre.despAdm)}`,
+      `RESULTADO OPERACIONAL: ${brl(dre.resultadoOp)} (${fmtPct(dre.margemOp)})`,
+      `(-) Tributos: ${brl(dre.tributos)}`,
+      `(-) Despesa financeira: ${brl(dre.despFin)}`,
+      dre.pessoal > 0 ? `(-) Gastos pessoais (PF): ${brl(dre.pessoal)}` : null,
+      dre.invest > 0 ? `(-) Investimentos: ${brl(dre.invest)}` : null,
+      dre.naoClass > 0 ? `(-) Não classificado: ${brl(dre.naoClass)}` : null,
+      `RESULTADO LÍQUIDO: ${brl(dre.resultado)} (${fmtPct(dre.margemLiq)})`,
+      dre.retiradas > 0 ? `Retiradas/pró-labore (transferência): ${brl(dre.retiradas)}` : null,
+      ``,
+      `Gerencial, gerado pelo Meton a partir dos lançamentos classificados. Não substitui a contabilidade oficial.`,
+    ].filter((x) => x !== null);
+    try { await navigator.clipboard.writeText(l.join("\n")); setToast("DRE copiada."); }
+    catch (e) { setToast("Não consegui copiar neste navegador."); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[70] flex flex-col" style={{ background: NUDE }}>
+      <div className="text-white px-4 pb-4 shrink-0" style={{ background: DARK, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <div className="max-w-lg mx-auto">
+          <div className="flex items-center justify-between mb-3">
+            <span className="mt-display font-bold flex items-center gap-2"><ClipboardList size={17} /> DRE gerencial</span>
+            <button onClick={onClose} className="text-green-200 p-2 -m-2" aria-label="Fechar"><X size={22} /></button>
+          </div>
+          <div className="flex gap-2">
+            <select value={mKey} onChange={(e) => setMKey(e.target.value)}
+              className="flex-1 rounded-xl px-3 py-2 text-sm font-semibold focus:outline-none" style={{ background: "#104225", color: "white" }}>
+              {months.map((k) => <option key={k} value={k}>{monthFull(k)}</option>)}
+            </select>
+            <div className="flex rounded-xl overflow-hidden" style={{ background: "#104225" }}>
+              {["PJ", "PF", "Tudo"].map((x) => (
+                <button key={x} onClick={() => setW(x)} className="px-3 text-xs font-bold"
+                  style={w === x ? { background: LIGHT, color: DARK } : { color: "#86efac" }}>{x}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-lg mx-auto p-4 space-y-4">
+          {dre.count === 0 ? (
+            <Card className="p-6 text-center text-sm text-stone-400">Sem lançamentos neste mês/carteira.</Card>
+          ) : (
+            <Card className="p-4">
+              <Line label="Receita operacional" value={dre.receitaOp} />
+              {dre.outrasEntradas > 0 && <Line label="Outras entradas" value={dre.outrasEntradas} indent />}
+              <Line label="Receita total" value={dre.receitaTotal} bold />
+              <Line label="(−) Custo fixo" value={dre.custoFixo} indent />
+              <Line label="(−) Custo variável" value={dre.custoVar} indent />
+              <Line label="Lucro bruto" value={dre.lucroBruto} bold pct={dre.margemBruta}
+                color={dre.lucroBruto >= 0 ? undefined : "#e11d48"} />
+              <Line label="(−) Despesa operacional" value={dre.despOp} indent />
+              <Line label="(−) Despesa administrativa" value={dre.despAdm} indent />
+              <Line label="Resultado operacional" value={dre.resultadoOp} bold pct={dre.margemOp}
+                color={dre.resultadoOp >= 0 ? undefined : "#e11d48"} />
+              <Line label="(−) Tributos" value={dre.tributos} indent />
+              <Line label="(−) Despesa financeira" value={dre.despFin} indent />
+              {dre.pessoal > 0 && <Line label="(−) Gastos pessoais (PF)" value={dre.pessoal} indent />}
+              {dre.invest > 0 && <Line label="(−) Investimentos" value={dre.invest} indent />}
+              {dre.naoClass > 0 && <Line label="(−) Não classificado" value={dre.naoClass} indent color="#d97706" />}
+              <Line label="Resultado líquido" value={dre.resultado} bold pct={dre.margemLiq}
+                color={dre.resultado >= 0 ? "#15803d" : "#e11d48"} />
+              {dre.retiradas > 0 && (
+                <div className="flex justify-between pt-2 mt-1 border-t border-dashed border-stone-200 text-[11px]" style={{ color: NUDE_DEEP }}>
+                  <span>Retiradas / pró-labore (transferência)</span>
+                  <span className="mt-mono font-semibold">{brl(dre.retiradas)}</span>
+                </div>
+              )}
+            </Card>
+          )}
+
+          {dre.naoClass > 0 && (
+            <Card className="p-3.5" style={{ background: "#fffbeb" }}>
+              <p className="text-[11px] leading-relaxed" style={{ color: "#92400e" }}>
+                <b>{brl(dre.naoClass)} sem classificação</b> distorcem sua DRE. Classifique os lançamentos no Extrato (categoria certa gera a natureza certa) para o resultado ficar fiel.
+              </p>
+            </Card>
+          )}
+
+          <button onClick={copyDRE} className="w-full py-2.5 rounded-xl border border-stone-300 text-stone-700 font-semibold text-sm flex items-center justify-center gap-1.5 bg-white">
+            <Copy size={15} /> Copiar DRE
+          </button>
+          <p className="text-[10px] text-stone-400 leading-snug px-1 pb-4">
+            DRE gerencial gerada dos seus lançamentos classificados. Transferências internas ficam fora; retiradas aparecem abaixo da linha. Não substitui a contabilidade oficial.
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 
