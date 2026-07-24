@@ -15,7 +15,7 @@ import {
 } from "recharts";
 
 /* ============================================================
-   METON FINANCEIRA — Fase 1 · v4
+   MetOn Financeira — Fase 1 · v4
    Novo: relatório mensal com dicas + compartilhar (WhatsApp,
    e-mail, salvar, copiar) · múltiplos usuários (admin/colaborador)
    Paleta: verde-escuro · verde-claro · branco · nude
@@ -609,7 +609,7 @@ async function textToPdf(title, textLines) {
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(18);
-  doc.text("Meton Financeira", margin, 38);
+  doc.text("MetOn Financeira", margin, 38);
   y = 90;
   doc.setTextColor(30, 30, 30);
   doc.setFont("helvetica", "bold");
@@ -747,7 +747,7 @@ function buildPeriodReport({ from, to, tx, bills, catOf, userName }) {
     `POR MEIO DE PAGAMENTO`,
     ...Object.entries(methods).map(([m, v]) => `- ${m}: entrou ${brl(v.in)} · saiu ${brl(v.out)}`),
     ``,
-    `Gerado por ${userName} em ${todayISO().split("-").reverse().join("/")} — Meton Financeira`,
+    `Gerado por ${userName} em ${todayISO().split("-").reverse().join("/")} — MetOn Financeira`,
     `Conteúdo educacional. Não constitui recomendação de investimento.`,
   ];
   return { inn, out, result: inn - out, count: rows.length, text: lines.join("\n") };
@@ -913,14 +913,14 @@ function buildReport({ mKey, tx, bills, catOf, saldoTotal, userName }) {
     eduTips.push(`💡 Reserva saudável e sobra consistente. A partir daqui, é comum estudar diversificação por prazo e objetivo (renda fixa, previdência, etc.). Isto é conteúdo educacional — a escolha de produtos deve ser feita com um profissional certificado, considerando seu perfil de risco.`);
   }
   if (cur.result > 0) {
-    eduTips.push(`💡 Dinheiro parado em conta perde para a inflação ao longo do tempo. Vale se informar sobre opções conservadoras de curto prazo. O Meton não recomenda ativos específicos — busque orientação de um assessor registrado na CVM.`);
+    eduTips.push(`💡 Dinheiro parado em conta perde para a inflação ao longo do tempo. Vale se informar sobre opções conservadoras de curto prazo. O MetOn não recomenda ativos específicos — busque orientação de um assessor registrado na CVM.`);
   }
   eduTips.push(`⚠️ As orientações acima são educativas e gerais, não constituem recomendação de investimento (art. da Resolução CVM sobre consultoria de valores mobiliários). Decisões devem considerar seu perfil e, idealmente, apoio profissional.`);
 
   /* --- texto compartilhável --- */
   const arrow = (d) => (d === null ? "" : d >= 0 ? ` (▲ ${d.toFixed(0)}%)` : ` (▼ ${(-d).toFixed(0)}%)`);
   const lines = [
-    `📊 *RELATÓRIO MENSAL — METON FINANCEIRA*`,
+    `📊 *RELATÓRIO MENSAL — MetOn Financeira*`,
     `🗓 ${monthFull(mKey)}`,
     ``,
     `*RESULTADO DO MÊS*`,
@@ -944,7 +944,7 @@ function buildReport({ mKey, tx, bills, catOf, saldoTotal, userName }) {
     ``,
     reserve !== null ? `Reserva atual: ~${reserve.toFixed(1)} mês(es) de despesas` : null,
     ``,
-    `_Gerado por ${userName} em ${todayISO().split("-").reverse().join("/")} · Meton Financeira_`,
+    `_Gerado por ${userName} em ${todayISO().split("-").reverse().join("/")} · MetOn Financeira_`,
     `_Conteúdo educacional. Não constitui recomendação de investimento._`,
   ].filter((l) => l !== null);
 
@@ -1222,7 +1222,7 @@ function ReportModal({ tx, bills, catOf, saldoTotal, userName, contacts, onSaveC
     window.open(url, "_blank");
   };
   const shareEmail = () => {
-    const subject = `Relatório Mensal Meton — ${monthFull(mKey)}`;
+    const subject = `Relatório Mensal MetOn — ${monthFull(mKey)}`;
     window.open(`mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(report.text.replace(/\*/g, ""))}`, "_blank");
   };
   const saveTxt = () => {
@@ -1364,7 +1364,7 @@ function ReportModal({ tx, bills, catOf, saldoTotal, userName, contacts, onSaveC
           )}
 
           <Card className="p-4">
-            <SectionTitle>Dicas do Meton</SectionTitle>
+            <SectionTitle>Dicas do MetOn</SectionTitle>
             <div className="space-y-2.5">
               {report.tips.map((t, i) => (
                 <p key={i} className="text-sm text-stone-700 leading-snug">{t}</p>
@@ -1524,7 +1524,7 @@ function MiniBars() {
 const SLIDES = [
   {
     tag: "Bem-vindo",
-    title: "Meton Financeira",
+    title: "MetOn Financeira",
     body: "Seu radar financeiro: pessoa física e empresa no mesmo lugar. Veja este tour rápido — leva menos de 2 minutos.",
     visual: (
       <div className="flex flex-col items-center py-4">
@@ -1557,7 +1557,7 @@ const SLIDES = [
   {
     tag: "Passo 2 · Importar",
     title: "Traga seu extrato em 1 toque",
-    body: "Baixe o extrato no app do seu banco e envie aqui em CSV, OFX, PDF ou foto. O Meton não se conecta ao banco: você traz o arquivo, ele organiza. Repetidos são ignorados.",
+    body: "Baixe o extrato no app do seu banco e envie aqui em CSV, OFX, PDF ou foto. O MetOn não se conecta ao banco: você traz o arquivo, ele organiza. Repetidos são ignorados.",
     visual: (
       <MiniCard className="p-4 text-center">
         <FileUp size={28} className="mx-auto mb-2" style={{ color: DARK }} />
@@ -1573,7 +1573,7 @@ const SLIDES = [
   {
     tag: "Passo 3 · Organização",
     title: "Cada gasto se organiza sozinho",
-    body: "O Meton reconhece o nome do lugar e classifica. Se errar, você corrige uma vez — e ele aprende para sempre.",
+    body: "O MetOn reconhece o nome do lugar e classifica. Se errar, você corrige uma vez — e ele aprende para sempre.",
     visual: (
       <MiniCard className="divide-y divide-stone-100">
         {[
@@ -2338,7 +2338,7 @@ export default function MetonFinanceira() {
     } else if (forecast.avgNet > 0 && reserve !== null && reserve < 6) {
       out.push(`💡 Você tem sobrado em média ${brl(forecast.avgNet)}/mês. Direcionar essa sobra para completar a reserva (meta de 6 meses) é o passo mais seguro antes de investir. Conteúdo educacional — busque um profissional certificado para escolher produtos.`);
     } else if (forecast.avgNet > 0 && reserve !== null && reserve >= 6) {
-      out.push(`💡 Reserva saudável e sobra consistente. É um bom momento para se informar sobre diversificação por objetivo e prazo — sempre com orientação profissional. O Meton não indica ativos específicos.`);
+      out.push(`💡 Reserva saudável e sobra consistente. É um bom momento para se informar sobre diversificação por objetivo e prazo — sempre com orientação profissional. O MetOn não indica ativos específicos.`);
     }
     // reserva de impostos (dor específica de quem tem PJ)
     if (settings.taxEnabled && taxReserve.revenue > 0 && taxReserve.remaining > 0) {
@@ -2673,7 +2673,7 @@ export default function MetonFinanceira() {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: DARK }}>
         <style>{fontStyles}</style>
-        <div className="mt-display font-semibold" style={{ color: LIGHT }}>Carregando Meton…</div>
+        <div className="mt-display font-semibold" style={{ color: LIGHT }}>Carregando MetOn…</div>
       </div>
     );
   }
@@ -3401,7 +3401,7 @@ export default function MetonFinanceira() {
               <div className="flex items-start gap-2">
                 <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: NUDE_DEEP }} />
                 <p className="text-[11px] text-stone-600 leading-relaxed">
-                  <b>O Meton não se conecta ao seu banco.</b> Você traz o extrato (arquivo ou foto) e o app organiza,
+                  <b>O MetOn não se conecta ao seu banco.</b> Você traz o extrato (arquivo ou foto) e o app organiza,
                   categoriza e analisa. Conexão automática via Open Finance exige autorização do Banco Central
                   e está no roteiro — ainda não existe nesta versão.
                 </p>
@@ -3719,7 +3719,7 @@ export default function MetonFinanceira() {
               </div>
             </Card>
             <p className="text-[11px] text-stone-400 px-1 leading-relaxed">
-              Meton Financeira · Fase 1 · uso pessoal. Senhas protegidas por hash SHA-256.
+              MetOn Financeira · Fase 1 · uso pessoal. Senhas protegidas por hash SHA-256.
               Relatórios têm caráter educacional e não constituem recomendação de investimento.
             </p>
           </>
@@ -4123,7 +4123,7 @@ function DREModal({ tx, catOf, onClose, setToast }) {
       `RESULTADO LÍQUIDO: ${brl(dre.resultado)} (${fmtPct(dre.margemLiq)})`,
       dre.retiradas > 0 ? `Retiradas/pró-labore (transferência): ${brl(dre.retiradas)}` : null,
       ``,
-      `Gerencial, gerado pelo Meton a partir dos lançamentos classificados. Não substitui a contabilidade oficial.`,
+      `Gerencial, gerado pelo MetOn a partir dos lançamentos classificados. Não substitui a contabilidade oficial.`,
     ].filter((x) => x !== null);
     try { await navigator.clipboard.writeText(l.join("\n")); setToast("DRE copiada."); }
     catch (e) { setToast("Não consegui copiar neste navegador."); }
@@ -4228,7 +4228,7 @@ function ExportPeriodModal({ tx, bills, catOf, userName, contacts, onClose, setT
     setBusy(false);
   };
   const shareWhatsApp = () => window.open(`https://wa.me/?text=${encodeURIComponent(report.text)}`, "_blank");
-  const shareEmail = () => window.open(`mailto:?subject=${encodeURIComponent("Relatório Meton — " + title)}&body=${encodeURIComponent(report.text)}`, "_blank");
+  const shareEmail = () => window.open(`mailto:?subject=${encodeURIComponent("Relatório MetOn — " + title)}&body=${encodeURIComponent(report.text)}`, "_blank");
   const copyText = async () => {
     try { await navigator.clipboard.writeText(report.text); setToast("Relatório copiado."); }
     catch (e) { setToast("Não consegui copiar neste navegador."); }
