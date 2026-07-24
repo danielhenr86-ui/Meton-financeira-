@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Papa from "papaparse";
+import { MetonMark, MetonWord, SIGNAL, SIGNAL_DEEP } from "./MetonLogo.jsx";
 import {
   Compass, ListOrdered, CalendarClock, Upload, Settings2, Plus, Trash2,
   TrendingUp, TrendingDown, CheckCircle2, AlertTriangle, Wallet, Landmark,
@@ -14,7 +15,7 @@ import {
 } from "recharts";
 
 /* ============================================================
-   METON FINANCEIRA — Fase 1 · v4
+   MetOn Financeira — Fase 1 · v4
    Novo: relatório mensal com dicas + compartilhar (WhatsApp,
    e-mail, salvar, copiar) · múltiplos usuários (admin/colaborador)
    Paleta: verde-escuro · verde-claro · branco · nude
@@ -27,10 +28,19 @@ const SESSION_KEY = "meton:session";   // sessão {userId}
 const CONTACTS_KEY = "meton:contacts"; // agenda de contatos p/ envio WhatsApp
 const TUTORIAL_KEY = "meton:tutorialSeen"; // apresentação já vista
 
-const DARK = "#14532d";
-const LIGHT = "#86efac";
-const NUDE = "#F6F0E8";
-const NUDE_DEEP = "#C9A87C";
+/* ---- Paleta MetOn v1.0 ----
+   Os nomes antigos foram mantidos de proposito: as chamadas espalhadas pelo
+   app continuam funcionando, ja apontando para as cores da marca. */
+const GRAFITE = "#0E1B17";
+const VERDE_SINAL = "#12B76A";
+const VERDE_PROFUNDO = "#07703F";
+const NEVOA = "#F1F4F2";
+const AMBAR = "#9A5F0F";
+
+const DARK = GRAFITE;
+const LIGHT = VERDE_SINAL;
+const NUDE = NEVOA;
+const NUDE_DEEP = AMBAR;
 
 const CATEGORIES = [
   "Recebimentos", "Alimentação", "Moradia", "Transporte", "Saúde",
@@ -594,7 +604,7 @@ async function textToPdf(title, textLines) {
   doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(18);
-  doc.text("Meton Financeira", margin, 38);
+  doc.text("MetOn Financeira", margin, 38);
   y = 90;
   doc.setTextColor(30, 30, 30);
   doc.setFont("helvetica", "bold");
@@ -732,7 +742,7 @@ function buildPeriodReport({ from, to, tx, bills, catOf, userName }) {
     `POR MEIO DE PAGAMENTO`,
     ...Object.entries(methods).map(([m, v]) => `- ${m}: entrou ${brl(v.in)} · saiu ${brl(v.out)}`),
     ``,
-    `Gerado por ${userName} em ${todayISO().split("-").reverse().join("/")} — Meton Financeira`,
+    `Gerado por ${userName} em ${todayISO().split("-").reverse().join("/")} — MetOn Financeira`,
     `Conteúdo educacional. Não constitui recomendação de investimento.`,
   ];
   return { inn, out, result: inn - out, count: rows.length, text: lines.join("\n") };
@@ -787,7 +797,7 @@ function buildICS(bills) {
         `DTSTAMP:${stamp}`,
         `DTSTART:${fmtLocal(d)}`,
         `SUMMARY:${esc(`${acao}: ${b.desc}${parcela} — ${brl(b.amount)}`)}`,
-        `DESCRIPTION:${esc(`Conta ${b.type === "pagar" ? "a pagar" : "a receber"} · carteira ${b.wallet} · Meton Financeira`)}`,
+        `DESCRIPTION:${esc(`Conta ${b.type === "pagar" ? "a pagar" : "a receber"} · carteira ${b.wallet} · MetOn Financeira`)}`,
         "BEGIN:VALARM",
         "ACTION:DISPLAY",
         `DESCRIPTION:${esc(`${acao}: ${b.desc}`)}`,
@@ -805,10 +815,10 @@ function buildICS(bills) {
   const cal = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//Meton Financeira//PT-BR//",
+    "PRODID:-//MetOn Financeira//PT-BR//",
     "CALSCALE:GREGORIAN",
     "METHOD:PUBLISH",
-    "X-WR-CALNAME:Meton — Vencimentos",
+    "X-WR-CALNAME:MetOn — Vencimentos",
     ...events,
     "END:VCALENDAR",
   ].join("\r\n");
@@ -975,14 +985,14 @@ function buildReport({ mKey, tx, bills, catOf, saldoTotal, userName }) {
     eduTips.push(`💡 Reserva saudável e sobra consistente. A partir daqui, é comum estudar diversificação por prazo e objetivo (renda fixa, previdência, etc.). Isto é conteúdo educacional — a escolha de produtos deve ser feita com um profissional certificado, considerando seu perfil de risco.`);
   }
   if (cur.result > 0) {
-    eduTips.push(`💡 Dinheiro parado em conta perde para a inflação ao longo do tempo. Vale se informar sobre opções conservadoras de curto prazo. O Meton não recomenda ativos específicos — busque orientação de um assessor registrado na CVM.`);
+    eduTips.push(`💡 Dinheiro parado em conta perde para a inflação ao longo do tempo. Vale se informar sobre opções conservadoras de curto prazo. O MetOn não recomenda ativos específicos — busque orientação de um assessor registrado na CVM.`);
   }
   eduTips.push(`⚠️ As orientações acima são educativas e gerais, não constituem recomendação de investimento (art. da Resolução CVM sobre consultoria de valores mobiliários). Decisões devem considerar seu perfil e, idealmente, apoio profissional.`);
 
   /* --- texto compartilhável --- */
   const arrow = (d) => (d === null ? "" : d >= 0 ? ` (▲ ${d.toFixed(0)}%)` : ` (▼ ${(-d).toFixed(0)}%)`);
   const lines = [
-    `📊 *RELATÓRIO MENSAL — METON FINANCEIRA*`,
+    `📊 *RELATÓRIO MENSAL — MetOn Financeira*`,
     `🗓 ${monthFull(mKey)}`,
     ``,
     `*RESULTADO DO MÊS*`,
@@ -1006,7 +1016,7 @@ function buildReport({ mKey, tx, bills, catOf, saldoTotal, userName }) {
     ``,
     reserve !== null ? `Reserva atual: ~${reserve.toFixed(1)} mês(es) de despesas` : null,
     ``,
-    `_Gerado por ${userName} em ${todayISO().split("-").reverse().join("/")} · Meton Financeira_`,
+    `_Gerado por ${userName} em ${todayISO().split("-").reverse().join("/")} · MetOn Financeira_`,
     `_Conteúdo educacional. Não constitui recomendação de investimento._`,
   ].filter((l) => l !== null);
 
@@ -1051,7 +1061,7 @@ function HealthGauge({ score, savings, commit, reserve }) {
   const zones = [
     { color: "#dc2626", label: "Crítico" },
     { color: "#d97706", label: "Atenção" },
-    { color: "#15803d", label: "Saudável" },
+    { color: "#07703F", label: "Saudável" },
   ];
   const pct = Math.max(2, Math.min(98, score));
   const zone = score < 34 ? 0 : score < 67 ? 1 : 2;
@@ -1284,7 +1294,7 @@ function ReportModal({ tx, bills, catOf, saldoTotal, userName, contacts, onSaveC
     window.open(url, "_blank");
   };
   const shareEmail = () => {
-    const subject = `Relatório Mensal Meton — ${monthFull(mKey)}`;
+    const subject = `Relatório Mensal MetOn — ${monthFull(mKey)}`;
     window.open(`mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(report.text.replace(/\*/g, ""))}`, "_blank");
   };
   const saveTxt = () => {
@@ -1426,7 +1436,7 @@ function ReportModal({ tx, bills, catOf, saldoTotal, userName, contacts, onSaveC
           )}
 
           <Card className="p-4">
-            <SectionTitle>Dicas do Meton</SectionTitle>
+            <SectionTitle>Dicas do MetOn</SectionTitle>
             <div className="space-y-2.5">
               {report.tips.map((t, i) => (
                 <p key={i} className="text-sm text-stone-700 leading-snug">{t}</p>
@@ -1586,12 +1596,12 @@ function MiniBars() {
 const SLIDES = [
   {
     tag: "Bem-vindo",
-    title: "Meton Financeira",
+    title: "MetOn Financeira",
     body: "Seu radar financeiro: pessoa física e empresa no mesmo lugar. Veja este tour rápido — leva menos de 2 minutos.",
     visual: (
       <div className="flex flex-col items-center py-4">
         <div className="w-20 h-20 rounded-3xl flex items-center justify-center mb-4" style={{ background: LIGHT }}>
-          <Compass size={40} style={{ color: DARK }} />
+          <MetonMark size={40} style={{ color: DARK }} />
         </div>
         <div className="flex gap-2">
           {["Radar", "Extrato", "Contas", "Relatório"].map((t) => (
@@ -1619,7 +1629,7 @@ const SLIDES = [
   {
     tag: "Passo 2 · Importar",
     title: "Traga seu extrato em 1 toque",
-    body: "Baixe o extrato no app do seu banco e envie aqui em CSV, OFX, PDF ou foto. O Meton não se conecta ao banco: você traz o arquivo, ele organiza. Repetidos são ignorados.",
+    body: "Baixe o extrato no app do seu banco e envie aqui em CSV, OFX, PDF ou foto. O MetOn não se conecta ao banco: você traz o arquivo, ele organiza. Repetidos são ignorados.",
     visual: (
       <MiniCard className="p-4 text-center">
         <FileUp size={28} className="mx-auto mb-2" style={{ color: DARK }} />
@@ -1635,7 +1645,7 @@ const SLIDES = [
   {
     tag: "Passo 3 · Organização",
     title: "Cada gasto se organiza sozinho",
-    body: "O Meton reconhece o nome do lugar e classifica. Se errar, você corrige uma vez — e ele aprende para sempre.",
+    body: "O MetOn reconhece o nome do lugar e classifica. Se errar, você corrige uma vez — e ele aprende para sempre.",
     visual: (
       <MiniCard className="divide-y divide-stone-100">
         {[
@@ -1776,9 +1786,9 @@ function Onboarding({ onClose }) {
       <div className="px-5 pt-5 pb-2 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-7 h-7 rounded-lg flex items-center justify-center" style={{ background: DARK }}>
-            <Compass size={15} style={{ color: LIGHT }} />
+            <MetonMark size={15} style={{ color: LIGHT }} />
           </div>
-          <span className="mt-display font-extrabold text-sm" style={{ color: DARK }}>Meton</span>
+          <MetonWord className="mt-display font-extrabold text-sm" style={{ color: DARK }} accent={SIGNAL_DEEP} />
         </div>
         <button onClick={onClose} className="text-xs font-semibold text-stone-400">Pular tour</button>
       </div>
@@ -1894,9 +1904,9 @@ function AuthScreen({ users, onAuthed, onCreateFirst, onAddUser, onResetAccess, 
       <style>{fontStyles}</style>
       <div className="pb-10 px-6 text-center" style={{ background: DARK, paddingTop: "calc(env(safe-area-inset-top, 0px) + 56px)" }}>
         <div className="w-14 h-14 rounded-2xl mx-auto mb-3 flex items-center justify-center" style={{ background: LIGHT }}>
-          <Compass size={28} style={{ color: DARK }} />
+          <MetonMark size={28} style={{ color: DARK }} />
         </div>
-        <h1 className="mt-display font-extrabold text-2xl text-white tracking-tight">Meton</h1>
+        <h1 className="mt-display font-extrabold text-2xl text-white tracking-tight"><MetonWord accent={LIGHT} /></h1>
         <div className="text-[11px] uppercase tracking-[0.3em]" style={{ color: LIGHT }}>Financeira</div>
         <p className="text-green-100 text-xs mt-3 max-w-xs mx-auto">
           Sua visão panorâmica das finanças pessoais e da empresa.
@@ -2400,7 +2410,7 @@ export default function MetonFinanceira() {
     } else if (forecast.avgNet > 0 && reserve !== null && reserve < 6) {
       out.push(`💡 Você tem sobrado em média ${brl(forecast.avgNet)}/mês. Direcionar essa sobra para completar a reserva (meta de 6 meses) é o passo mais seguro antes de investir. Conteúdo educacional — busque um profissional certificado para escolher produtos.`);
     } else if (forecast.avgNet > 0 && reserve !== null && reserve >= 6) {
-      out.push(`💡 Reserva saudável e sobra consistente. É um bom momento para se informar sobre diversificação por objetivo e prazo — sempre com orientação profissional. O Meton não indica ativos específicos.`);
+      out.push(`💡 Reserva saudável e sobra consistente. É um bom momento para se informar sobre diversificação por objetivo e prazo — sempre com orientação profissional. O MetOn não indica ativos específicos.`);
     }
     // reserva de impostos (dor específica de quem tem PJ)
     if (settings.taxEnabled && taxReserve.revenue > 0 && taxReserve.remaining > 0) {
@@ -2794,7 +2804,7 @@ export default function MetonFinanceira() {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: DARK }}>
         <style>{fontStyles}</style>
-        <div className="mt-display font-semibold" style={{ color: LIGHT }}>Carregando Meton…</div>
+        <div className="mt-display font-semibold" style={{ color: LIGHT }}>Carregando MetOn…</div>
       </div>
     );
   }
@@ -2828,10 +2838,10 @@ export default function MetonFinanceira() {
           <div className="flex items-center justify-between mb-5">
             <div className="flex items-center gap-2.5">
               <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: LIGHT }}>
-                <Compass size={19} style={{ color: DARK }} />
+                <MetonMark size={19} style={{ color: DARK }} />
               </div>
               <div className="leading-tight">
-                <div className="mt-display font-extrabold text-lg tracking-tight">Meton</div>
+                <div className="mt-display font-extrabold text-lg tracking-tight"><MetonWord accent={LIGHT} /></div>
                 <div className="text-[10px] uppercase tracking-[0.25em]" style={{ color: LIGHT }}>Financeira</div>
               </div>
             </div>
@@ -3132,12 +3142,12 @@ export default function MetonFinanceira() {
                               <span className="mt-mono text-[11px] text-stone-500">{brl(g.saved)} / {brl(g.target)}</span>
                             </div>
                             <div className="h-2 rounded-full overflow-hidden" style={{ background: "#f5f5f4" }}>
-                              <div className="h-2 rounded-full" style={{ width: `${pct}%`, background: pct >= 100 ? "#15803d" : DARK }} />
+                              <div className="h-2 rounded-full" style={{ width: `${pct}%`, background: pct >= 100 ? "#07703F" : DARK }} />
                             </div>
                             <div className="flex justify-between text-[10.5px] mt-1 text-stone-400">
                               <span>{pct.toFixed(0)}% · falta {brl(falta)}</span>
                               {pct >= 100 ? (
-                                <span className="font-bold" style={{ color: "#15803d" }}>Concluída 🎉</span>
+                                <span className="font-bold" style={{ color: "#07703F" }}>Concluída 🎉</span>
                               ) : proj ? (
                                 <span style={late ? { color: "#d97706", fontWeight: 700 } : {}}>
                                   no ritmo atual: ~{proj.meses} mês(es) ({proj.label}){late ? " · passa do prazo" : ""}
@@ -3522,7 +3532,7 @@ export default function MetonFinanceira() {
               <div className="flex items-start gap-2">
                 <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: NUDE_DEEP }} />
                 <p className="text-[11px] text-stone-600 leading-relaxed">
-                  <b>O Meton não se conecta ao seu banco.</b> Você traz o extrato (arquivo ou foto) e o app organiza,
+                  <b>O MetOn não se conecta ao seu banco.</b> Você traz o extrato (arquivo ou foto) e o app organiza,
                   categoriza e analisa. Conexão automática via Open Finance exige autorização do Banco Central
                   e está no roteiro — ainda não existe nesta versão.
                 </p>
@@ -3762,7 +3772,7 @@ export default function MetonFinanceira() {
                 <p className="text-[10px] text-stone-500 mt-2 leading-relaxed">
                   Gera um arquivo com os vencimentos dos próximos 12 meses (parcelas e recorrências incluídas) com
                   alarme na véspera e no dia. Abra o arquivo e confirme — o <b>Calendário do seu celular/PC avisa
-                  na data, mesmo com o Meton fechado</b>. É o lembrete mais confiável sem servidor; notificações
+                  na data, mesmo com o MetOn fechado</b>. É o lembrete mais confiável sem servidor; notificações
                   automáticas por push chegarão na versão com nuvem.
                 </p>
               </div>
@@ -3862,7 +3872,7 @@ export default function MetonFinanceira() {
               </div>
             </Card>
             <p className="text-[11px] text-stone-400 px-1 leading-relaxed">
-              Meton Financeira · Fase 1 · uso pessoal. Senhas protegidas por hash SHA-256.
+              MetOn Financeira · Fase 1 · uso pessoal. Senhas protegidas por hash SHA-256.
               Relatórios têm caráter educacional e não constituem recomendação de investimento.
             </p>
           </>
@@ -4266,7 +4276,7 @@ function DREModal({ tx, catOf, onClose, setToast }) {
       `RESULTADO LÍQUIDO: ${brl(dre.resultado)} (${fmtPct(dre.margemLiq)})`,
       dre.retiradas > 0 ? `Retiradas/pró-labore (transferência): ${brl(dre.retiradas)}` : null,
       ``,
-      `Gerencial, gerado pelo Meton a partir dos lançamentos classificados. Não substitui a contabilidade oficial.`,
+      `Gerencial, gerado pelo MetOn a partir dos lançamentos classificados. Não substitui a contabilidade oficial.`,
     ].filter((x) => x !== null);
     try { await navigator.clipboard.writeText(l.join("\n")); setToast("DRE copiada."); }
     catch (e) { setToast("Não consegui copiar neste navegador."); }
@@ -4288,7 +4298,7 @@ function DREModal({ tx, catOf, onClose, setToast }) {
             <div className="flex rounded-xl overflow-hidden" style={{ background: "#104225" }}>
               {["PJ", "PF", "Tudo"].map((x) => (
                 <button key={x} onClick={() => setW(x)} className="px-3 text-xs font-bold"
-                  style={w === x ? { background: LIGHT, color: DARK } : { color: "#86efac" }}>{x}</button>
+                  style={w === x ? { background: LIGHT, color: DARK } : { color: "#12B76A" }}>{x}</button>
               ))}
             </div>
           </div>
@@ -4318,7 +4328,7 @@ function DREModal({ tx, catOf, onClose, setToast }) {
               {dre.invest > 0 && <Line label="(−) Investimentos" value={dre.invest} indent />}
               {dre.naoClass > 0 && <Line label="(−) Não classificado" value={dre.naoClass} indent color="#d97706" />}
               <Line label="Resultado líquido" value={dre.resultado} bold pct={dre.margemLiq}
-                color={dre.resultado >= 0 ? "#15803d" : "#e11d48"} />
+                color={dre.resultado >= 0 ? "#07703F" : "#e11d48"} />
               {dre.retiradas > 0 && (
                 <div className="flex justify-between pt-2 mt-1 border-t border-dashed border-stone-200 text-[11px]" style={{ color: NUDE_DEEP }}>
                   <span>Retiradas / pró-labore (transferência)</span>
@@ -4371,7 +4381,7 @@ function ExportPeriodModal({ tx, bills, catOf, userName, contacts, onClose, setT
     setBusy(false);
   };
   const shareWhatsApp = () => window.open(`https://wa.me/?text=${encodeURIComponent(report.text)}`, "_blank");
-  const shareEmail = () => window.open(`mailto:?subject=${encodeURIComponent("Relatório Meton — " + title)}&body=${encodeURIComponent(report.text)}`, "_blank");
+  const shareEmail = () => window.open(`mailto:?subject=${encodeURIComponent("Relatório MetOn — " + title)}&body=${encodeURIComponent(report.text)}`, "_blank");
   const copyText = async () => {
     try { await navigator.clipboard.writeText(report.text); setToast("Relatório copiado."); }
     catch (e) { setToast("Não consegui copiar neste navegador."); }
