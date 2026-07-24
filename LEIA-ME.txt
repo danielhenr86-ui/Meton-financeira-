@@ -1,0 +1,36 @@
+MetOn Financeira - identidade MetOn v1.0
+=========================================
+
+Base: versao do repositorio de 24/07/2026 (4.453 linhas), com as
+funcionalidades de contas recorrentes PRESERVADAS. Conferido.
+
+ONDE VAI CADA ARQUIVO (mesma estrutura deste zip):
+
+  index.html            -> raiz do projeto      (substitui)
+  vite.config.js        -> raiz do projeto      (substitui)
+  tailwind.config.js    -> raiz do projeto      (substitui)
+  public/icon.svg       -> pasta public/        (substitui)
+  src/MetonFinanceira.jsx -> pasta src/         (substitui)
+  src/InstallPrompt.jsx   -> pasta src/         (substitui)
+  src/MetonLogo.jsx       -> pasta src/         (ARQUIVO NOVO)
+
+O MetonLogo.jsx e obrigatorio. Sem ele o build falha, porque
+MetonFinanceira.jsx importa dele.
+
+COMO SUBIR NO GITHUB (jeito que nao erra):
+  1. Descompacte este zip.
+  2. Abra o repositorio Meton-financeira- no GitHub.
+  3. Botao "Add file" > "Upload files".
+  4. Arraste as PASTAS src e public + os 3 arquivos da raiz
+     de uma vez so. O GitHub mantem a estrutura.
+  5. Escreva a mensagem do commit e confirme.
+  6. A Vercel republica sozinha em ~1 minuto.
+
+COMO CONFERIR SE FUNCIONOU (sem abrir o app):
+  Acesse  https://meton-financeira.vercel.app/manifest.webmanifest
+  Tem que aparecer "MetOn Financeira" e "#0E1B17".
+  Se aparecer "Meton" e "#14532d", o vite.config.js nao entrou.
+
+NAO E PRECISO workflow do GitHub Actions: a Vercel compila sozinha.
+Desligue o GitHub Pages (Settings > Pages), senao voce fica com um
+segundo endereco servindo a versao quebrada.
