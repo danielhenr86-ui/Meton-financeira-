@@ -738,6 +738,83 @@ function buildPeriodReport({ from, to, tx, bills, catOf, userName }) {
   return { inn, out, result: inn - out, count: rows.length, text: lines.join("\n") };
 }
 
+// lista as próximas ocorrências (datas) de uma conta dentro de uma janela
+function occurrencesInWindow(b, fromISO, toISO, cap = 24) {
+  const recur = b.recur || (b.recurring ? "mensal" : "nao");
+  const from = new Date(fromISO + "T00:00:00");
+  const to = new Date(toISO + "T23:59:59");
+  let d = new Date(b.dueDate + "T12:00:00");
+  if (isNaN(d)) return [];
+  const dates = [];
+  if (recur === "nao") {
+    if (d >= from && d <= to) dates.push(new Date(d));
+    return dates;
+  }
+  let remaining = recur === "parcelado"
+    ? Math.max(0, (b.installments || 1) - ((b.installmentIndex || 1) - 1))
+    : Infinity;
+  let guard = 0;
+  while (d <= to && remaining > 0 && guard < 120 && dates.length < cap) {
+    if (d >= from) dates.push(new Date(d));
+    if (recur === "quinzenal") d.setDate(d.getDate() + 15);
+    else if (recur === "anual") d.setFullYear(d.getFullYear() + 1);
+    else d.setMonth(d.getMonth() + 1);
+    remaining--; guard++;
+  }
+  return dates;
+}
+
+// gera um calendário .ics com alarmes: o sistema do celular/PC lembra na data, mesmo com o app fechado
+function buildICS(bills) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const fmtLocal = (d) => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}T090000`;
+  const esc = (s) => String(s).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,");
+  const today = todayISO();
+  const limit = new Date(); limit.setFullYear(limit.getFullYear() + 1);
+  const toISOd = limit.toISOString().slice(0, 10);
+  const stamp = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15) + "Z";
+
+  const events = [];
+  for (const b of bills.filter((x) => !x.paid)) {
+    const dates = occurrencesInWindow(b, today, toISOd);
+    dates.forEach((d, i) => {
+      const acao = b.type === "pagar" ? "Pagar" : "Receber";
+      const parcela = (b.recur === "parcelado" && b.installments)
+        ? ` (parcela ${(b.installmentIndex || 1) + i}/${b.installments})` : "";
+      events.push([
+        "BEGIN:VEVENT",
+        `UID:meton-${b.id}-${i}@meton-financeira`,
+        `DTSTAMP:${stamp}`,
+        `DTSTART:${fmtLocal(d)}`,
+        `SUMMARY:${esc(`${acao}: ${b.desc}${parcela} — ${brl(b.amount)}`)}`,
+        `DESCRIPTION:${esc(`Conta ${b.type === "pagar" ? "a pagar" : "a receber"} · carteira ${b.wallet} · Meton Financeira`)}`,
+        "BEGIN:VALARM",
+        "ACTION:DISPLAY",
+        `DESCRIPTION:${esc(`${acao}: ${b.desc}`)}`,
+        "TRIGGER:-PT0M",
+        "END:VALARM",
+        "BEGIN:VALARM",
+        "ACTION:DISPLAY",
+        `DESCRIPTION:${esc(`Amanhã: ${acao.toLowerCase()} ${b.desc}`)}`,
+        "TRIGGER:-P1D",
+        "END:VALARM",
+        "END:VEVENT",
+      ].join("\r\n"));
+    });
+  }
+  const cal = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Meton Financeira//PT-BR//",
+    "CALSCALE:GREGORIAN",
+    "METHOD:PUBLISH",
+    "X-WR-CALNAME:Meton — Vencimentos",
+    ...events,
+    "END:VCALENDAR",
+  ].join("\r\n");
+  return { content: cal, count: events.length };
+}
+
 /* ---------- DRE gerencial (a partir da classificação contábil) ---------- */
 
 function buildDRE({ tx, mKey, wallet, catOf }) {
@@ -2587,6 +2664,65 @@ export default function MetonFinanceira() {
     }
   };
 
+  // notificação do sistema ao abrir o app, se houver vencimento hoje/atrasado (1x por dia)
+  const notifyDueToday = async () => {
+    try {
+      if (!settings.notifyEnabled) return;
+      if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+      const todayK = todayISO();
+      const last = await store.get("meton:lastNotify");
+      if (last?.value === todayK) return; // já avisou hoje
+      const due = bills.filter((b) => {
+        if (b.paid) return false;
+        const days = Math.ceil((new Date(b.dueDate) - new Date(todayK)) / 86400000);
+        return days <= 0;
+      });
+      if (!due.length) return;
+      const first = due[0];
+      const title = due.length === 1
+        ? `${first.type === "pagar" ? "Vence hoje" : "A receber hoje"}: ${first.desc}`
+        : `${due.length} contas vencendo`;
+      const body = due.slice(0, 3).map((b) => `${b.desc} — ${brl(b.amount)}`).join("\n")
+        + (due.length > 3 ? `\n+${due.length - 3} outra(s)` : "");
+      const opts = { body, icon: "/pwa-192x192.png", badge: "/pwa-192x192.png", tag: "meton-vencimentos" };
+      const reg = await navigator.serviceWorker?.getRegistration?.();
+      if (reg?.showNotification) reg.showNotification(title, opts);
+      else new Notification(title, opts);
+      await store.set("meton:lastNotify", todayK);
+    } catch (e) { /* notificação é conveniência; nunca quebra o app */ }
+  };
+
+  useEffect(() => {
+    if (loaded && currentUser) notifyDueToday();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, currentUser]);
+
+  const toggleNotifications = async (on) => {
+    if (!on) { setSettings((s) => ({ ...s, notifyEnabled: false })); return; }
+    if (typeof Notification === "undefined") {
+      setToast("Este navegador não permite notificações. No iPhone, use o lembrete via Calendário logo abaixo — funciona melhor.");
+      return;
+    }
+    const perm = await Notification.requestPermission();
+    if (perm === "granted") {
+      setSettings((s) => ({ ...s, notifyEnabled: true }));
+      setToast("Notificações ativadas: ao abrir o app no dia, você será avisado dos vencimentos.");
+    } else {
+      setToast("Permissão negada pelo navegador. Você pode reativar nas configurações do site.");
+    }
+  };
+
+  const exportICS = () => {
+    const { content, count } = buildICS(bills);
+    if (!count) { setToast("Nenhuma conta em aberto para lembrar."); return; }
+    const blob = new Blob([content], { type: "text/calendar;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "meton-vencimentos.ics";
+    a.click();
+    setToast(`${count} lembrete(s) gerados. Abra o arquivo e adicione ao seu Calendário — ele avisa na data, mesmo com o app fechado.`);
+  };
+
   const cleanInvalidDates = () => {
     const bad = tx.filter((t) => !isValidISODate(t.date));
     if (!bad.length) { setToast("Nenhum lançamento com data inválida. Tudo certo."); return; }
@@ -3608,6 +3744,28 @@ export default function MetonFinanceira() {
                   <button onClick={() => setRules((p) => p.filter((_, j) => j !== i))} className="text-stone-300"><Trash2 size={14} /></button>
                 </div>
               ))}
+            </Card>
+
+            {/* Lembretes de vencimento */}
+            <SectionTitle>Lembretes de vencimento</SectionTitle>
+            <Card className="p-4 space-y-3">
+              <label className="flex items-center justify-between text-sm text-stone-700">
+                <span className="font-medium pr-3">Avisar ao abrir o app quando houver conta vencendo</span>
+                <input type="checkbox" checked={!!settings.notifyEnabled}
+                  onChange={(e) => toggleNotifications(e.target.checked)}
+                  className="rounded w-5 h-5 shrink-0" />
+              </label>
+              <div className="pt-2 border-t border-stone-100">
+                <button onClick={exportICS} className="w-full py-2.5 rounded-xl text-white font-semibold text-sm flex items-center justify-center gap-1.5" style={{ background: DARK }}>
+                  <CalendarDays size={15} /> Adicionar vencimentos ao Calendário
+                </button>
+                <p className="text-[10px] text-stone-500 mt-2 leading-relaxed">
+                  Gera um arquivo com os vencimentos dos próximos 12 meses (parcelas e recorrências incluídas) com
+                  alarme na véspera e no dia. Abra o arquivo e confirme — o <b>Calendário do seu celular/PC avisa
+                  na data, mesmo com o Meton fechado</b>. É o lembrete mais confiável sem servidor; notificações
+                  automáticas por push chegarão na versão com nuvem.
+                </p>
+              </div>
             </Card>
 
             {/* Reserva de impostos */}
