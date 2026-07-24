@@ -4,22 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
 
-    <title>Meton Financeira</title>
+    <title>MetOn Financeira</title>
     <meta name="description" content="Sua visão panorâmica das finanças pessoais e da empresa." />
 
-    <!-- Cor da barra do navegador -->
-    <meta name="theme-color" content="#14532d" />
+    <!-- Cor da barra do navegador — grafite da marca -->
+    <meta name="theme-color" content="#0E1B17" />
 
-    <!-- Ícones -->
-    <link rel="icon" href="/favicon.ico" sizes="any" />
-    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- Ícones: %BASE_URL% é trocado pelo Vite no build.
+         Com caminho absoluto "/favicon.ico" eles dão 404 em subpasta. -->
+    <link rel="icon" href="%BASE_URL%favicon.ico" sizes="any" />
+    <link rel="icon" href="%BASE_URL%icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="%BASE_URL%apple-touch-icon.png" />
 
     <!-- iOS: abre em tela cheia como app -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Meton" />
-    <link rel="apple-touch-startup-image" href="/splash.png" />
+    <meta name="apple-mobile-web-app-title" content="MetOn" />
+    <link rel="apple-touch-startup-image" href="%BASE_URL%splash.png" />
 
     <!-- Android -->
     <meta name="mobile-web-app-capable" content="yes" />
