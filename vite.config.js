@@ -2,32 +2,22 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
-/* ------------------------------------------------------------------
-   base do site.
-   - Vercel / dominio proprio: fica "/" (padrao)
-   - GitHub Pages em subpasta: o workflow define VITE_BASE=/Meton-financeira-/
-   Sem isso, o app procura os arquivos na raiz do dominio e abre em branco.
-   ------------------------------------------------------------------ */
-const base = process.env.VITE_BASE || "/";
-
 export default defineConfig({
-  base,
   plugins: [
     react(),
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["favicon.ico", "apple-touch-icon.png", "icon.svg"],
       manifest: {
-        name: "MetOn Financeira",
-        short_name: "MetOn",
+        name: "Meton Financeira",
+        short_name: "Meton",
         description: "Sua visão panorâmica das finanças pessoais e da empresa.",
-        theme_color: "#0E1B17",
-        background_color: "#0E1B17",
+        theme_color: "#14532d",
+        background_color: "#14532d",
         display: "standalone",
         orientation: "portrait",
-        // scope e start_url acompanham o base, senao o app instalado abre em 404
-        scope: base,
-        start_url: base,
+        scope: "/",
+        start_url: "/",
         lang: "pt-BR",
         categories: ["finance", "productivity"],
         icons: [
@@ -37,10 +27,12 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // aumenta o limite para o bundle do app (~670kb)
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff,woff2}"],
         runtimeCaching: [
           {
+            // fontes do Google: cacheia para funcionar offline
             urlPattern: /^https:\/\/fonts\.(googleapis|gstatic)\.com\/.*/i,
             handler: "CacheFirst",
             options: {
