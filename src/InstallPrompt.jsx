@@ -65,7 +65,7 @@ export default function InstallPrompt() {
       className="fixed bottom-20 left-3 right-3 z-[80] max-w-lg mx-auto rounded-2xl border shadow-lg p-4"
     >
       <div className="flex items-start gap-3">
-        <img src="/pwa-192x192.png" alt="Meton" className="w-11 h-11 rounded-xl shrink-0" />
+        <img src={`${import.meta.env.BASE_URL}pwa-192x192.png`} alt="Meton" className="w-11 h-11 rounded-xl shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="font-bold text-sm" style={{ color: DARK }}>
             Instalar o Meton no seu celular
@@ -84,6 +84,7 @@ export default function InstallPrompt() {
           <div className="flex gap-2 mt-3">
             {!isIOS && (
               <button
+                type="button"
                 onClick={install}
                 className="px-4 py-2 rounded-xl text-white text-xs font-bold"
                 style={{ background: DARK }}
@@ -91,7 +92,7 @@ export default function InstallPrompt() {
                 Instalar
               </button>
             )}
-            <button onClick={dismiss} className="px-3 py-2 rounded-xl text-xs font-bold text-stone-500">
+            <button type="button" onClick={dismiss} className="px-3 py-2 rounded-xl text-xs font-bold text-stone-500" aria-label="Fechar lembrete de instalação">
               Agora não
             </button>
           </div>
