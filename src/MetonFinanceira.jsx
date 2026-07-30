@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback, useId } from "react";
 import Papa from "papaparse";
 import {
   Compass, ListOrdered, CalendarClock, Upload, Settings2, Plus, Trash2,
@@ -942,18 +942,19 @@ function buildForecast({ tx, bills, saldoTotal, wallet, catOf }) {
   const avgNet = avgIn - avgOut; // saldo médio que sobra por mês
 
   // contas a pagar/receber já cadastradas nos próximos 90 dias
-  const today = new Date(todayISO());
+  const todayKey = todayISO();
+  const today = new Date(todayKey + "T12:00:00");
   const horizons = [30, 60, 90];
   const upcoming = bills.filter((b) => !b.paid).filter((b) => wallet === "Tudo" || b.wallet === wallet);
   const proj = horizons.map((h) => {
     const limit = new Date(today); limit.setDate(limit.getDate() + h);
+    const limitKey = limit.toISOString().slice(0, 10);
     let billsPay = 0, billsRecv = 0;
     for (const b of upcoming) {
-      const due = new Date(b.dueDate);
-      if (due >= today && due <= limit) {
-        if (b.type === "pagar") billsPay += b.amount;
-        else billsRecv += b.amount;
-      }
+      const amountInWindow = provisionInWindow(b, todayKey, limitKey);
+      if (!amountInWindow) continue;
+      if (b.type === "pagar") billsPay += amountInWindow;
+      else billsRecv += amountInWindow;
     }
     // projeção = saldo atual + (fluxo médio proporcional aos meses) + contas conhecidas do período
     const months = h / 30;
@@ -1529,12 +1530,13 @@ function ReportModal({ tx, bills, catOf, saldoTotal, userName, contacts, onSaveC
       {/* folha de envio WhatsApp para qualquer contato */}
       {showWa && (
         <div className="fixed inset-0 z-[55] flex items-end sm:items-center justify-center" style={{ background: "rgba(20,83,45,0.5)" }} onClick={() => setShowWa(false)}>
-          <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
+          <div role="dialog" aria-modal="true" aria-labelledby="whatsapp-title"
+            className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 className="mt-display font-bold text-base flex items-center gap-2">
+              <h3 id="whatsapp-title" className="mt-display font-bold text-base flex items-center gap-2">
                 <Share2 size={18} style={{ color: "#25D366" }} /> Enviar por WhatsApp
               </h3>
-              <button onClick={() => setShowWa(false)} className="text-stone-400"><X size={20} /></button>
+              <button type="button" onClick={() => setShowWa(false)} className="text-stone-400" aria-label="Fechar envio por WhatsApp"><X size={20} /></button>
             </div>
 
             {/* digitar número */}
@@ -1940,11 +1942,6 @@ function AuthScreen({ users, onAuthed, onCreateFirst, onAddUser, onResetAccess, 
     setBusy(false);
   };
 
-  const social = (provider) => {
-    setErr("");
-    setInfo(`Entrar com ${provider} estará disponível na versão publicada (exige servidor OAuth).`);
-  };
-
   return (
     <div className="min-h-screen flex flex-col" style={{ background: NUDE }}>
       <style>{fontStyles}</style>
@@ -2038,8 +2035,8 @@ function AuthScreen({ users, onAuthed, onCreateFirst, onAddUser, onResetAccess, 
           </div>
           <div className="grid grid-cols-3 gap-2">
             {[["Google", "#DB4437", "G"], ["Microsoft", "#0078D4", "M"], ["Apple", "#111111", ""]].map(([id, color, letter]) => (
-              <button key={id} onClick={() => social(id)}
-                className="py-2.5 rounded-xl border border-stone-300 bg-white flex items-center justify-center gap-1.5 text-sm font-semibold text-stone-700">
+              <button key={id} type="button" disabled aria-disabled="true" title={`${id} estará disponível quando o OAuth estiver configurado`}
+                className="py-2.5 rounded-xl border border-stone-300 bg-stone-50 flex items-center justify-center gap-1.5 text-sm font-semibold text-stone-500 opacity-65 cursor-not-allowed">
                 <span className="mt-display font-extrabold" style={{ color }}>{letter}</span>{id}
               </button>
             ))}
@@ -2386,7 +2383,7 @@ export default function MetonFinanceira() {
     const curLabel = monthFull(nowKey);
     const healthMonths = last3.filter((k) => flowTx.some((t) => monthKey(t.date) === k));
     const periodLabel = healthMonths.length
-      ? `${monthLabel(healthMonths[healthMonths.length - 1])}–${monthLabel(healthMonths[0])}`
+      ? `${monthLabel(healthMonths[0])}–${monthLabel(healthMonths[healthMonths.length - 1])}`
       : "sem histórico suficiente";
 
     return { saldoPF, saldoPJ, inMonth, outMonth, evolution, savings, commit, reserve, score, topCats, totalOut, methods, curLabel, periodLabel, monthCount: mCount };
@@ -2693,7 +2690,7 @@ export default function MetonFinanceira() {
   };
 
   const exportBackup = () => {
-    const blob = new Blob([JSON.stringify({ tx, bills, rules, contacts, version: 11 }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ tx, bills, rules, contacts, settings, goals, version: 12 }, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `meton-backup-${todayISO()}.json`;
@@ -2721,12 +2718,19 @@ export default function MetonFinanceira() {
           const phones = new Set(p.map((c) => c.phone));
           return [...p, ...data.contacts.filter((c) => !phones.has(c.phone))];
         });
+        if (data.settings) setSettings((s) => ({ ...s, ...data.settings, budgets: { ...(s.budgets || {}), ...(data.settings.budgets || {}) } }));
+        if (Array.isArray(data.goals)) setGoals((p) => {
+          const seen = new Set(p.map((g) => g.id || normalize(g.name)));
+          return [...p, ...data.goals.filter((g) => !seen.has(g.id || normalize(g.name)))];
+        });
         setToast(`Backup mesclado: +${newTx.length} lançamento(s).`);
       } else {
         setTx((data.tx || []).sort((a, b) => b.date.localeCompare(a.date)));
         setBills(data.bills || []);
         if (Array.isArray(data.rules) && data.rules.length) setRules(data.rules);
         if (Array.isArray(data.contacts)) setContacts(data.contacts);
+        if (data.settings) setSettings((s) => ({ ...s, ...data.settings, budgets: data.settings.budgets || {} }));
+        if (Array.isArray(data.goals)) setGoals(data.goals);
         setToast("Backup restaurado (dados substituídos).");
       }
     } catch (e) {
@@ -2754,7 +2758,8 @@ export default function MetonFinanceira() {
         : `${due.length} contas vencendo`;
       const body = due.slice(0, 3).map((b) => `${b.desc} — ${brl(b.amount)}`).join("\n")
         + (due.length > 3 ? `\n+${due.length - 3} outra(s)` : "");
-      const opts = { body, icon: "/pwa-192x192.png", badge: "/pwa-192x192.png", tag: "meton-vencimentos" };
+      const iconUrl = `${import.meta.env.BASE_URL}pwa-192x192.png`;
+      const opts = { body, icon: iconUrl, badge: iconUrl, tag: "meton-vencimentos" };
       const reg = await navigator.serviceWorker?.getRegistration?.();
       if (reg?.showNotification) reg.showNotification(title, opts);
       else new Notification(title, opts);
@@ -3007,11 +3012,11 @@ export default function MetonFinanceira() {
                     <p className="text-sm text-stone-400">Ainda sem histórico suficiente para prever. Importe mais meses.</p>
                   ) : (
                     <>
-                      <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-center">
                         {forecast.proj.map((p) => (
-                          <div key={p.horizon} className="rounded-xl p-2.5" style={{ background: NUDE }}>
+                          <div key={p.horizon} className="rounded-xl p-2.5 min-w-0" style={{ background: NUDE }}>
                             <div className="text-[10px] text-stone-500 font-semibold">{p.horizon} dias</div>
-                            <div className={`mt-mono text-sm font-bold mt-1 ${p.projected >= 0 ? "text-green-800" : "text-rose-600"}`}>
+                            <div className={`mt-mono text-[13px] sm:text-sm font-bold mt-1 break-words ${p.projected >= 0 ? "text-green-800" : "text-rose-600"}`}>
                               {brl(p.projected)}
                             </div>
                           </div>
@@ -3362,7 +3367,8 @@ export default function MetonFinanceira() {
                               <div className={`mt-mono text-sm font-semibold ${t.amount >= 0 ? "text-green-800" : "text-stone-800"}`}>
                                 {t.amount >= 0 ? "+" : ""}{brl(t.amount)}
                               </div>
-                              <button onClick={() => { if (window.confirm(`Excluir "${t.desc}" (${brl(t.amount)})?`)) setTx((p) => p.filter((x) => x.id !== t.id)); }} className="text-stone-300 mt-1">
+                              <button type="button" aria-label={`Excluir lançamento ${t.desc}`} title="Excluir lançamento"
+                                onClick={() => { if (window.confirm(`Excluir "${t.desc}" (${brl(t.amount)})?`)) setTx((p) => p.filter((x) => x.id !== t.id)); }} className="text-stone-300 mt-1">
                                 <Trash2 size={13} />
                               </button>
                             </div>
@@ -3532,10 +3538,10 @@ export default function MetonFinanceira() {
                               className="text-[11px] font-bold px-2.5 py-1 rounded-full text-white" style={{ background: DARK }}>
                               {b.type === "pagar" ? "Paguei" : "Recebi"}
                             </button>
-                            <button onClick={() => setEditingBill(b)} className="text-stone-400" title="Editar">
+                            <button type="button" onClick={() => setEditingBill(b)} className="text-stone-400" title="Editar" aria-label={`Editar conta ${b.desc}`}>
                               <Pencil size={14} />
                             </button>
-                            <button onClick={() => { if (window.confirm(`Excluir "${b.desc}"?`)) setBills((p) => p.filter((x) => x.id !== b.id)); }} className="text-stone-300" title="Excluir">
+                            <button type="button" onClick={() => { if (window.confirm(`Excluir "${b.desc}"?`)) setBills((p) => p.filter((x) => x.id !== b.id)); }} className="text-stone-300" title="Excluir" aria-label={`Excluir conta ${b.desc}`}>
                               <Trash2 size={14} />
                             </button>
                           </div>
@@ -3659,7 +3665,7 @@ export default function MetonFinanceira() {
                       {pending.rows.length} lançamento(s) · {pending.dupes} já existiam · conta {importWallet}
                     </div>
                   </div>
-                  <button onClick={() => setPending(null)} className="text-stone-400 shrink-0"><X size={18} /></button>
+                  <button type="button" onClick={() => setPending(null)} className="text-stone-400 shrink-0" aria-label="Fechar prévia da importação"><X size={18} /></button>
                 </div>
                 {(pending.isPdf || pending.isPhoto) && (
                   <div className="text-[11px] rounded-xl px-3 py-2 mb-3 flex items-start gap-1.5" style={{ background: "#fffbeb", color: "#92400e" }}>
@@ -3677,7 +3683,9 @@ export default function MetonFinanceira() {
                         <input inputMode="decimal" value={r.amountStr ?? String(r.amount).replace(".", ",")}
                           onChange={(e) => updatePendingRow(i, "amountStr", e.target.value)}
                           className={`flex-1 text-right mt-mono text-sm font-semibold rounded-lg border border-stone-200 px-2 py-1 focus:outline-none ${r.amount >= 0 ? "text-green-800" : "text-stone-800"}`} />
-                        <button onClick={() => removePendingRow(i)} className="text-stone-300 shrink-0"><Trash2 size={14} /></button>
+                        <button type="button" onClick={() => removePendingRow(i)} className="text-stone-300 shrink-0" aria-label={`Remover linha importada ${i + 1}`}>
+                          <Trash2 size={14} />
+                        </button>
                       </div>
                       <input value={r.desc} placeholder="Descrição"
                         onChange={(e) => updatePendingRow(i, "desc", e.target.value)}
@@ -3750,10 +3758,12 @@ export default function MetonFinanceira() {
                   </div>
                   {isAdmin && u.id !== currentUser.id && (
                     <div className="flex items-center gap-3 shrink-0">
-                      <button onClick={() => setResetTarget(u)} className="text-stone-400" title="Redefinir senha">
+                      <button type="button" onClick={() => setResetTarget(u)} className="text-stone-400" title="Redefinir senha" aria-label={`Redefinir senha de ${u.name}`}>
                         <KeyRound size={14} />
                       </button>
-                      <button onClick={() => removeUser(u)} className="text-stone-300"><Trash2 size={14} /></button>
+                      <button type="button" onClick={() => removeUser(u)} className="text-stone-300" aria-label={`Remover usuário ${u.name}`}>
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                   )}
                 </div>
@@ -3785,7 +3795,9 @@ export default function MetonFinanceira() {
                         <div className="text-[11px] text-stone-400">{formatPhone(c.phone)}</div>
                       </div>
                     </div>
-                    <button onClick={() => setContacts((p) => p.filter((x) => x.id !== c.id))} className="text-stone-300"><Trash2 size={14} /></button>
+                    <button type="button" onClick={() => setContacts((p) => p.filter((x) => x.id !== c.id))} className="text-stone-300" aria-label={`Remover contato ${c.name}`}>
+                      <Trash2 size={14} />
+                    </button>
                   </div>
                 ))}
               </Card>
@@ -3811,7 +3823,9 @@ export default function MetonFinanceira() {
               {rules.map((r, i) => (
                 <div key={i} className="p-3 flex items-center justify-between text-sm">
                   <span className="text-stone-600">"{r.keyword}" <ChevronRight size={12} className="inline text-stone-300" /> <b>{r.category}</b></span>
-                  <button onClick={() => setRules((p) => p.filter((_, j) => j !== i))} className="text-stone-300"><Trash2 size={14} /></button>
+                  <button type="button" onClick={() => setRules((p) => p.filter((_, j) => j !== i))} className="text-stone-300" aria-label={`Remover regra ${r.keyword}`}>
+                    <Trash2 size={14} />
+                  </button>
                 </div>
               ))}
             </Card>
@@ -4064,12 +4078,14 @@ export default function MetonFinanceira() {
 /* ---------- modais ---------- */
 
 function ModalShell({ title, onClose, children }) {
+  const titleId = useId();
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(20,83,45,0.45)" }} onClick={onClose}>
-      <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-labelledby={titleId}
+        className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="mt-display font-bold text-base">{title}</h3>
-          <button onClick={onClose} className="text-stone-400"><X size={20} /></button>
+          <h3 id={titleId} className="mt-display font-bold text-base">{title}</h3>
+          <button type="button" aria-label="Fechar" onClick={onClose} className="text-stone-400"><X size={20} /></button>
         </div>
         {children}
       </div>
@@ -4087,8 +4103,11 @@ function AddTxModal({ onClose, onSave, rules }) {
   const [wallet, setWallet] = useState("PF");
   const [cat, setCat] = useState("");
   const [catTouched, setCatTouched] = useState(false);
+  const [cls, setCls] = useState("");
+  const [clsTouched, setClsTouched] = useState(false);
   // sugere categoria automaticamente pela descrição, até o usuário mexer
   const effectiveCat = catTouched ? cat : (desc.trim() ? applyRules(desc, rules || DEFAULT_RULES) : "");
+  const effectiveCls = clsTouched ? cls : suggestClassification(effectiveCat || "Outros", desc, wallet, type === "entrada" ? "receber" : "pagar");
   const ok = desc.trim() && parseBRNumber(amount) !== null;
   return (
     <ModalShell title="Lançamento manual" onClose={onClose}>
@@ -4101,6 +4120,17 @@ function AddTxModal({ onClose, onSave, rules }) {
           <select className={inputCls} value={effectiveCat || "Outros"} onChange={(e) => { setCat(e.target.value); setCatTouched(true); }}>
             {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
           </select>
+        </div>
+        <div>
+          <label className="block text-xs text-stone-500 mb-1 pl-1">
+            Classificação {!clsTouched && desc.trim() && <span style={{ color: NUDE_DEEP }}>(sugerida)</span>}
+          </label>
+          <select className={inputCls} value={effectiveCls} onChange={(e) => { setCls(e.target.value); setClsTouched(true); }}>
+            {CLASSIFICATIONS.map((c) => <option key={c}>{c}</option>)}
+          </select>
+          <p className="text-[10px] text-stone-400 mt-1 pl-1 leading-snug">
+            Natureza contábil usada no resumo por natureza e no DRE simplificado.
+          </p>
         </div>
         <div className="flex gap-2">
           {[["saida", "Saída"], ["entrada", "Entrada"]].map(([v, l]) => (
@@ -4119,7 +4149,7 @@ function AddTxModal({ onClose, onSave, rules }) {
         <button disabled={!ok}
           onClick={() => {
             const v = Math.abs(parseBRNumber(amount));
-            onSave({ desc: desc.trim(), amount: type === "saida" ? -v : v, date, wallet, category: effectiveCat || "Outros" });
+            onSave({ desc: desc.trim(), amount: type === "saida" ? -v : v, date, wallet, category: effectiveCat || "Outros", classification: effectiveCls || "Não classificado" });
           }}
           className="w-full py-2.5 rounded-xl text-white font-semibold text-sm disabled:opacity-40" style={{ background: DARK }}>
           Salvar lançamento
@@ -4325,9 +4355,11 @@ function GoalsModal({ goals, setGoals, onClose, setToast }) {
                   </div>
                 </div>
                 <button onClick={() => aporte(g)} className="text-[11px] font-bold px-2 py-1 rounded-lg text-white" style={{ background: DARK }}>+ Aporte</button>
-                <button onClick={() => { setEditingId(g.id); setName(g.name); setTarget(String(g.target).replace(".", ",")); setSaved(String(g.saved).replace(".", ",")); setDeadline(g.deadline || ""); }}
+                <button type="button" aria-label={`Editar meta ${g.name}`}
+                  onClick={() => { setEditingId(g.id); setName(g.name); setTarget(String(g.target).replace(".", ",")); setSaved(String(g.saved).replace(".", ",")); setDeadline(g.deadline || ""); }}
                   className="p-1.5 text-stone-500"><Pencil size={14} /></button>
-                <button onClick={() => { if (window.confirm(`Excluir a meta "${g.name}"?`)) { setGoals((p) => p.filter((x) => x.id !== g.id)); if (editingId === g.id) reset(); } }}
+                <button type="button" aria-label={`Excluir meta ${g.name}`}
+                  onClick={() => { if (window.confirm(`Excluir a meta "${g.name}"?`)) { setGoals((p) => p.filter((x) => x.id !== g.id)); if (editingId === g.id) reset(); } }}
                   className="p-1.5 text-stone-400"><Trash2 size={14} /></button>
               </div>
             ))}
