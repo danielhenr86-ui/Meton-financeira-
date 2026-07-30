@@ -16,173 +16,111 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Apply duplicate-check modal fix
+      - name: Apply duplicate-check patch
         run: |
-          node <<'NODE'
-          const fs = require('fs');
-          const path = 'src/MetonFinanceira.jsx';
-          let s = fs.readFileSync(path, 'utf8');
-
-          function replaceOnce(oldText, newText, label, marker = newText) {
-            if (s.includes(marker)) return;
-            if (!s.includes(oldText)) throw new Error(`Missing target: ${label}`);
-            s = s.replace(oldText, newText);
-          }
-
-          replaceOnce(
-`function findLikelyDuplicates(tx) {
-  const pairs = [];
-  const seen = new Set();
-  const arr = tx.filter((t) => isValidISODate(t.date));
-  for (let i = 0; i < arr.length; i++) {
-    for (let j = i + 1; j < arr.length; j++) {
-      const a = arr[i], b = arr[j];
-      if (Math.sign(a.amount) !== Math.sign(b.amount)) continue;
-      if (Math.abs(Math.abs(a.amount) - Math.abs(b.amount)) > 1.0) continue;
-      const dd = Math.abs(new Date(a.date) - new Date(b.date)) / 86400000;
-      if (dd > 3) continue;
-      // um manual (sem cara de banco) e outro bancário — ou origens marcadas distintas
-      const aBank = a.source === "import" || looksBankish(a.desc);
-      const bBank = b.source === "import" || looksBankish(b.desc);
-      const aManual = a.source === "conta" || a.source === "manual" || !looksBankish(a.desc);
-      const bManual = b.source === "conta" || b.source === "manual" || !looksBankish(b.desc);
-      if (!((aBank && bManual && !bBank) || (bBank && aManual && !aBank))) continue;
-      const key = [a.id, b.id].sort().join("|");
-      if (seen.has(key)) continue;
-      seen.add(key);
-      pairs.push([a, b]);
-    }
-  }
-  return pairs.slice(0, 30);
-}`,
-`function findLikelyDuplicates(tx) {
-  const pairs = [];
-  const seen = new Set();
-  const arr = tx
-    .filter((t) => isValidISODate(t.date) && Math.sign(t.amount) !== 0)
-    .map((t) => ({
-      t,
-      time: new Date(`${t.date}T12:00:00`).getTime(),
-      sign: Math.sign(t.amount),
-      abs: Math.abs(t.amount),
-      bank: t.source === "import" || looksBankish(t.desc),
-      manual: t.source === "conta" || t.source === "manual" || !looksBankish(t.desc),
-    }))
-    .sort((a, b) => a.time - b.time);
-  for (let i = 0; i < arr.length; i++) {
-    for (let j = i + 1; j < arr.length; j++) {
-      const a = arr[i], b = arr[j];
-      if ((b.time - a.time) / 86400000 > 3) break;
-      if (a.sign !== b.sign) continue;
-      if (Math.abs(a.abs - b.abs) > 1.0) continue;
-      // um manual (sem cara de banco) e outro bancário — ou origens marcadas distintas
-      if (!((a.bank && b.manual && !b.bank) || (b.bank && a.manual && !a.bank))) continue;
-      const key = [a.t.id, b.t.id].sort().join("|");
-      if (seen.has(key)) continue;
-      seen.add(key);
-      pairs.push([a.t, b.t]);
-      if (pairs.length >= 30) return pairs;
-    }
-  }
-  return pairs;
-}`,
-            'optimized duplicate detection',
-            'Math.sign(t.amount) !== 0'
-          );
-
-          replaceOnce(
-`      <div role="dialog" aria-modal="true" aria-labelledby={titleId}
-        className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">`,
-`      <div role="dialog" aria-modal="true" aria-labelledby={titleId}
-        className="bg-white w-full max-w-lg max-h-[92dvh] rounded-t-3xl sm:rounded-3xl p-5 flex flex-col overflow-hidden"
-        style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4 shrink-0">`,
-            'scrollable modal shell',
-            'max-h-[92dvh]'
-          );
-
-          replaceOnce(
-`        {children}
-      </div>`,
-`        <div className="min-h-0 flex-1 overflow-y-auto pr-1 -mr-1">
-          {children}
-        </div>
-      </div>`,
-            'modal body scroll area',
-            'overflow-y-auto pr-1'
-          );
-
-          replaceOnce(
-`        <div className="space-y-3">`,
-`        <div className="space-y-3 pb-2">`,
-            'dup check padding',
-            'space-y-3 pb-2'
-          );
-
-          replaceOnce(
-`                  <button onClick={() => del(t)} className="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg border border-rose-200 text-rose-600">
-                    Excluir
-                  </button>`,
-`                  <button type="button" onClick={() => del(t)} aria-label={`Excluir lançamento duplicado ${t.desc}`}
-                    className="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg border border-rose-200 text-rose-600">
-                    Excluir
-                  </button>`,
-            'duplicate delete aria',
-            'Excluir lançamento duplicado'
-          );
-
-          replaceOnce(
-`          {pairs.map(([a, b], i) => (
-            <Card key={i} className="p-3 space-y-2">
-              {[a, b].map((t) => (
-                <div key={t.id} className="flex items-center gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[12.5px] font-medium truncate">{t.desc}</div>
-                    <div className="text-[10.5px] text-stone-400">
-                      {t.date.split("-").reverse().join("/")} · {t.wallet} · {looksBankish(t.desc) || t.source === "import" ? "banco" : "manual"}
-                    </div>
-                  </div>
-                  <span className="mt-mono text-[12px] font-semibold shrink-0">{brl(t.amount)}</span>
-                  <button type="button" onClick={() => del(t)} aria-label={`Excluir lançamento duplicado ${t.desc}`}
-                    className="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg border border-rose-200 text-rose-600">
-                    Excluir
-                  </button>
-                </div>
-              ))}
-            </Card>
-          ))}`,
-`          {pairs.map(([a, b], i) => (
-            <Card key={i} className="p-3 space-y-2">
-              {[a, b].map((t) => (
-                <div key={t.id} className="flex items-center gap-2">
-                  <div className="flex-1 min-w-0">
-                    <div className="text-[12.5px] font-medium truncate">{t.desc}</div>
-                    <div className="text-[10.5px] text-stone-400">
-                      {t.date.split("-").reverse().join("/")} · {t.wallet} · {looksBankish(t.desc) || t.source === "import" ? "banco" : "manual"}
-                    </div>
-                  </div>
-                  <span className="mt-mono text-[12px] font-semibold shrink-0">{brl(t.amount)}</span>
-                  <button type="button" onClick={() => del(t)} aria-label={`Excluir lançamento duplicado ${t.desc}`}
-                    className="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg border border-rose-200 text-rose-600">
-                    Excluir
-                  </button>
-                </div>
-              ))}
-            </Card>
-          ))}
-          <div className="sticky bottom-0 -mx-1 pt-2 bg-white">
-            <button type="button" onClick={onClose}
-              className="w-full py-2.5 rounded-xl border border-stone-300 text-stone-700 font-semibold text-sm bg-white">
-              Voltar aos ajustes
-            </button>
-          </div>`,
-            'dup check back button',
-            'Voltar aos ajustes'
-          );
-
-          fs.writeFileSync(path, s);
-          NODE
+          git apply <<'PATCH'
+          diff --git a/src/MetonFinanceira.jsx b/src/MetonFinanceira.jsx
+          index b96e977..4e678ca 100644
+          --- a/src/MetonFinanceira.jsx
+          +++ b/src/MetonFinanceira.jsx
+          @@ -532,27 +532,33 @@ function looksBankish(desc) {
+           function findLikelyDuplicates(tx) {
+             const pairs = [];
+             const seen = new Set();
+          -  const arr = tx.filter((t) => isValidISODate(t.date));
+          +  const arr = tx
+          +    .filter((t) => isValidISODate(t.date) && Math.sign(t.amount) !== 0)
+          +    .map((t) => ({
+          +      t,
+          +      time: new Date(`${t.date}T12:00:00`).getTime(),
+          +      sign: Math.sign(t.amount),
+          +      abs: Math.abs(t.amount),
+          +      bank: t.source === "import" || looksBankish(t.desc),
+          +      manual: t.source === "conta" || t.source === "manual" || !looksBankish(t.desc),
+          +    }))
+          +    .sort((a, b) => a.time - b.time);
+             for (let i = 0; i < arr.length; i++) {
+               for (let j = i + 1; j < arr.length; j++) {
+                 const a = arr[i], b = arr[j];
+          -      if (Math.sign(a.amount) !== Math.sign(b.amount)) continue;
+          -      if (Math.abs(Math.abs(a.amount) - Math.abs(b.amount)) > 1.0) continue;
+          -      const dd = Math.abs(new Date(a.date) - new Date(b.date)) / 86400000;
+          -      if (dd > 3) continue;
+          +      if ((b.time - a.time) / 86400000 > 3) break;
+          +      if (a.sign !== b.sign) continue;
+          +      if (Math.abs(a.abs - b.abs) > 1.0) continue;
+                 // um manual (sem cara de banco) e outro bancário — ou origens marcadas distintas
+          -      const aBank = a.source === "import" || looksBankish(a.desc);
+          -      const bBank = b.source === "import" || looksBankish(b.desc);
+          -      const aManual = a.source === "conta" || a.source === "manual" || !looksBankish(a.desc);
+          -      const bManual = b.source === "conta" || b.source === "manual" || !looksBankish(b.desc);
+          -      if (!((aBank && bManual && !bBank) || (bBank && aManual && !aBank))) continue;
+          -      const key = [a.id, b.id].sort().join("|");
+          +      if (!((a.bank && b.manual && !b.bank) || (b.bank && a.manual && !a.bank))) continue;
+          +      const key = [a.t.id, b.t.id].sort().join("|");
+                 if (seen.has(key)) continue;
+                 seen.add(key);
+          -      pairs.push([a, b]);
+          +      pairs.push([a.t, b.t]);
+          +      if (pairs.length >= 30) return pairs;
+               }
+             }
+          -  return pairs.slice(0, 30);
+          +  return pairs;
+           }
+           
+           function linesToTx(lines) {
+          @@ -4082,12 +4088,15 @@ function ModalShell({ title, onClose, children }) {
+             return (
+               <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(20,83,45,0.45)" }} onClick={onClose}>
+                 <div role="dialog" aria-modal="true" aria-labelledby={titleId}
+          -        className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
+          -        <div className="flex items-center justify-between mb-4">
+          +        className="bg-white w-full max-w-lg max-h-[92dvh] rounded-t-3xl sm:rounded-3xl p-5 flex flex-col overflow-hidden"
+          +        style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
+          +        <div className="flex items-center justify-between mb-4 shrink-0">
+                   <h3 id={titleId} className="mt-display font-bold text-base">{title}</h3>
+                   <button type="button" aria-label="Fechar" onClick={onClose} className="text-stone-400"><X size={20} /></button>
+                 </div>
+          -        {children}
+          +        <div className="min-h-0 flex-1 overflow-y-auto pr-1 -mr-1">
+          +          {children}
+          +        </div>
+               </div>
+             </div>
+           );
+          @@ -4279,7 +4288,7 @@ function DupCheckModal({ tx, setTx, onClose, setToast }) {
+                     Nenhum par suspeito encontrado (mesmo valor e datas próximas entre um lançamento manual e um do banco).
+                   </p>
+                 ) : (
+          -        <div className="space-y-3">
+          +        <div className="space-y-3 pb-2">
+                   <p className="text-[11px] text-stone-500 leading-relaxed">
+                     Pares com <b>mesmo sinal, valores até R$ 1,00 de diferença e até 3 dias de distância</b>, onde um parece
+                     lançado manualmente (ex.: conta marcada como paga) e o outro veio do banco. Se forem o mesmo pagamento,
+          @@ -4296,13 +4305,20 @@ function DupCheckModal({ tx, setTx, onClose, setToast }) {
+                           </div>
+                         </div>
+                         <span className="mt-mono text-[12px] font-semibold shrink-0">{brl(t.amount)}</span>
+          -                  <button onClick={() => del(t)} className="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg border border-rose-200 text-rose-600">
+          +                  <button type="button" onClick={() => del(t)} aria-label={`Excluir lançamento duplicado ${t.desc}`}
+          +                    className="shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg border border-rose-200 text-rose-600">
+                           Excluir
+                         </button>
+                       </div>
+                     ))}
+                   </Card>
+                 ))}
+          +          <div className="sticky bottom-0 -mx-1 pt-2 bg-white">
+          +            <button type="button" onClick={onClose}
+          +              className="w-full py-2.5 rounded-xl border border-stone-300 text-stone-700 font-semibold text-sm bg-white">
+          +              Voltar aos ajustes
+          +            </button>
+          +          </div>
+                 </div>
+               )}
+             </ModalShell>
+          PATCH
 
       - name: Validate build
         run: |
@@ -195,9 +133,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           rm .github/workflows/apply-dup-check-fix.yml
           git add src/MetonFinanceira.jsx .github/workflows/apply-dup-check-fix.yml
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-            exit 0
-          fi
           git commit -m "Fix duplicate check modal navigation"
           git push
