@@ -1,5 +1,8 @@
 node_modules
 dist
+audit-screenshots
+dev-server*.log
+dev-server.pid
 .DS_Store
 *.local
 .env

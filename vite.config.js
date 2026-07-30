@@ -3,6 +3,28 @@ import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
 export default defineConfig({
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalized = id.replace(/\\/g, "/");
+          if (!normalized.includes("/node_modules/")) return undefined;
+          if (
+            normalized.includes("/node_modules/react/") ||
+            normalized.includes("/node_modules/react-dom/") ||
+            normalized.includes("/node_modules/scheduler/")
+          ) return "react";
+          if (normalized.includes("/node_modules/recharts/") || normalized.includes("/node_modules/recharts-scale/")) {
+            return "charts";
+          }
+          if (normalized.includes("/node_modules/d3-") || normalized.includes("/node_modules/victory-vendor/")) {
+            return "chart-vendor";
+          }
+          return "vendor";
+        },
+      },
+    },
+  },
   plugins: [
     react(),
     VitePWA({
