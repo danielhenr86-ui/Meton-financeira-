@@ -6,20 +6,6 @@ Feito com React + Vite + Tailwind. Roda no navegador e no celular (PWA-friendly)
 
 ---
 
-## Melhorias aplicadas nesta revisão
-
-- A previsão de caixa agora considera parcelas e recorrências cadastradas, não apenas o próximo vencimento.
-- O backup JSON exporta e restaura configurações, orçamentos, contatos e metas.
-- O lançamento manual passou a salvar a classificação contábil usada nos resumos por natureza e no DRE simplificado.
-- O app voltou a permitir zoom no celular e a previsão de 30/60/90 dias foi ajustada para telas estreitas.
-- Modais e botões de ação por ícone receberam rótulos de acessibilidade.
-- Login social foi marcado como indisponível enquanto não houver servidor OAuth, evitando falsa expectativa.
-- O build foi dividido em chunks menores (`react`, `vendor`, `charts` e `chart-vendor`) e compila sem aviso de chunk grande.
-
-Nota de manutenção: o build atual usa `src/main.jsx`, que importa os arquivos `.jsx`. Os arquivos `.tsx` presentes no projeto são duplicatas históricas e não entram no bundle enquanto não houver TypeScript configurado.
-
----
-
 ## O que você precisa saber antes
 
 Este projeto foi testado e **compila** (`npm run build` funciona). Ele é um protótipo:
