@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback, useId } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Papa from "papaparse";
 import {
   Compass, ListOrdered, CalendarClock, Upload, Settings2, Plus, Trash2,
@@ -917,6 +917,214 @@ function buildDRE({ tx, mKey, wallet, catOf }) {
   };
 }
 
+/* ======================================================================
+   MOTOR DE AUDITORIA — qualidade dos dados, separação PF/PJ, anomalias,
+   conciliação e score. Tudo calculado só a partir de lançamentos e contas
+   que o app já tem (sem documentos externos: notas, contratos, boletos).
+   ====================================================================== */
+
+const PERSONAL_CATS = ["Alimentação", "Lazer", "Saúde", "Educação", "Transporte", "Moradia"];
+const BUSINESS_CATS = ["Fornecedores", "Impostos", "Tarifas bancárias"];
+
+// ---------- 1) Índice de Qualidade dos Dados (0-100) ----------
+function computeDataQuality(tx, bills) {
+  const valid = tx.filter((t) => isValidISODate(t.date));
+  const invalidCount = tx.length - valid.length;
+  const dupPairs = findLikelyDuplicates(valid);
+  const uncategorized = valid.filter((t) => catOfDefault(t) === "Outros").length;
+  const uncatPct = valid.length ? uncategorized / valid.length : 0;
+
+  // cobertura: meses com pelo menos 1 lançamento dentro do intervalo real dos dados
+  let gapMonths = 0, monthsSpan = 0;
+  if (valid.length) {
+    const keys = valid.map((t) => monthKey(t.date)).sort();
+    const first = keys[0], last = keys[keys.length - 1];
+    const present = new Set(keys);
+    let [y, m] = first.split("-").map(Number);
+    const [ly, lm] = last.split("-").map(Number);
+    while (y < ly || (y === ly && m <= lm)) {
+      monthsSpan++;
+      const k = `${y}-${String(m).padStart(2, "0")}`;
+      if (!present.has(k)) gapMonths++;
+      m++; if (m > 12) { m = 1; y++; }
+    }
+  }
+  const noBills = bills.length === 0;
+
+  // pontuação: começa em 100 e desconta por problema encontrado
+  let score = 100;
+  score -= Math.min(30, invalidCount * 3);           // datas inválidas
+  score -= Math.min(25, dupPairs.length * 4);         // duplicidades prováveis
+  score -= Math.min(25, uncatPct * 100 * 0.5);        // não categorizados
+  score -= Math.min(15, gapMonths * 5);               // meses sem nenhum lançamento
+  score = Math.max(0, Math.round(score));
+
+  const label =
+    score >= 90 ? "Excelente" : score >= 75 ? "Boa" : score >= 60 ? "Utilizável com ressalvas"
+    : score >= 40 ? "Baixa confiabilidade" : "Dados insuficientes para decisões seguras";
+
+  return { score, label, invalidCount, dupCount: dupPairs.length, uncategorized, uncatPct, gapMonths, monthsSpan, noBills, total: tx.length, valid: valid.length };
+}
+function catOfDefault(t) { return t.category || "Outros"; }
+
+// ---------- 2) Índice de Separação Patrimonial PF/PJ (0-100) ----------
+function computeSeparationIndex(tx, bills) {
+  const flow = tx.filter((t) => isValidISODate(t.date) && !isTransfer(t));
+  const pjExp = flow.filter((t) => t.wallet === "PJ" && t.amount < 0);
+  const pfExp = flow.filter((t) => t.wallet === "PF" && t.amount < 0);
+  const pjPersonalAmt = pjExp.filter((t) => PERSONAL_CATS.includes(catOfDefault(t))).reduce((s, t) => s - t.amount, 0);
+  const pjTotalAmt = pjExp.reduce((s, t) => s - t.amount, 0) || 1;
+  const pfBusinessAmt = pfExp.filter((t) => BUSINESS_CATS.includes(catOfDefault(t))).reduce((s, t) => s - t.amount, 0);
+  const pfTotalAmt = pfExp.reduce((s, t) => s - t.amount, 0) || 1;
+
+  const crossPJPct = pjPersonalAmt / pjTotalAmt;   // gasto pessoal saindo da PJ
+  const crossPFPct = pfBusinessAmt / pfTotalAmt;   // gasto de empresa saindo da PF
+
+  // pró-labore formalizado? existe conta recorrente classificada como retirada
+  const hasFormalProlabore = bills.some((b) => (b.recur && b.recur !== "nao") && classOf(b) === "Retirada / Pró-labore");
+
+  // transferências PF<->PJ no período: quantidade por mês (muitas transferências soltas = mais bagunçado que uma única mensal)
+  const monthsWithTx = new Set(flow.map((t) => monthKey(t.date))).size || 1;
+  const transferCount = tx.filter((t) => isTransfer(t)).length;
+  const transfersPerMonth = transferCount / monthsWithTx;
+
+  let score = 100;
+  score -= Math.min(35, crossPJPct * 100 * 0.6);
+  score -= Math.min(25, crossPFPct * 100 * 0.6);
+  if (!hasFormalProlabore && transferCount > 0) score -= 15;
+  if (transfersPerMonth > 6) score -= 10;
+  score = Math.max(0, Math.round(score));
+
+  const label = score >= 80 ? "Bem separado" : score >= 55 ? "Mistura moderada" : "Mistura relevante (risco)";
+
+  return { score, label, crossPJPct, crossPFPct, pjPersonalAmt, pfBusinessAmt, hasFormalProlabore, transfersPerMonth: Math.round(transfersPerMonth * 10) / 10 };
+}
+
+// ---------- 3) Conciliação: saldo calculado vs saldo declarado do banco ----------
+function computeReconciliation(tx, wallet, declaredBalance) {
+  const rows = wallet === "Tudo" ? tx : tx.filter((t) => t.wallet === wallet);
+  const calculated = rows.filter((t) => isValidISODate(t.date)).reduce((s, t) => s + t.amount, 0);
+  if (declaredBalance === null || declaredBalance === undefined || declaredBalance === "") {
+    return { status: "sem_referencia", calculated, declared: null, diff: null, pct: null };
+  }
+  const declared = Number(declaredBalance);
+  const diff = declared - calculated;
+  const base = Math.max(Math.abs(declared), 1);
+  const pct = 100 - Math.min(100, (Math.abs(diff) / base) * 100);
+  let status;
+  if (Math.abs(diff) < 0.01) status = "conciliada";
+  else if (pct >= 98) status = "pequenas_ressalvas";
+  else if (pct >= 85) status = "parcial";
+  else status = "nao_conciliada";
+  return { status, calculated, declared, diff, pct: Math.round(pct * 10) / 10 };
+}
+const RECON_LABEL = {
+  conciliada: "Conciliada", pequenas_ressalvas: "Conciliada com pequenas ressalvas",
+  parcial: "Parcialmente conciliada", nao_conciliada: "Não conciliada", sem_referencia: "Sem saldo de referência informado",
+};
+
+// ---------- 4) Detecção de anomalias (regras conservadoras, sem acusar) ----------
+function computeAnomalies({ tx, catOf }) {
+  const out = [];
+  const valid = tx.filter((t) => isValidISODate(t.date) && !isTransfer(t));
+  const now = monthKey(todayISO());
+  const prev = prevMonthKey(now);
+  const curTx = valid.filter((t) => monthKey(t.date) === now);
+  const prevTx = valid.filter((t) => monthKey(t.date) === prev);
+
+  // crescimento anormal por categoria (mês vs mês anterior)
+  const byCat = (arr) => {
+    const m = {};
+    for (const t of arr) { if (t.amount < 0) { const c = catOfDefault(t); m[c] = (m[c] || 0) - t.amount; } }
+    return m;
+  };
+  const curCat = byCat(curTx), prevCat = byCat(prevTx);
+  for (const c of Object.keys(curCat)) {
+    const cur = curCat[c], before = prevCat[c] || 0;
+    if (before >= 20 && cur > before * 1.5 && (cur - before) >= 50) {
+      const pct = Math.round(((cur - before) / before) * 100);
+      out.push({
+        tipo: "Crescimento atípico de categoria", categoria: c,
+        desc: `"${c}" foi de ${brl(before)} para ${brl(cur)} (+${pct}%). Possível inconsistência ou mudança permanente — necessita validação.`,
+        valor: cur - before, prioridade: pct > 100 ? "alta" : "média",
+      });
+    } else if (before === 0 && cur >= 100) {
+      out.push({
+        tipo: "Nova categoria de gasto relevante", categoria: c,
+        desc: `"${c}" não tinha gasto no mês anterior e agora soma ${brl(cur)}. Operação atípica — verifique se é despesa nova recorrente.`,
+        valor: cur, prioridade: "média",
+      });
+    }
+  }
+
+  // concentração de despesa numa única categoria
+  const totalOut = Object.values(curCat).reduce((s, v) => s + v, 0);
+  const topCat = Object.entries(curCat).sort((a, b) => b[1] - a[1])[0];
+  if (topCat && totalOut > 0 && topCat[1] / totalOut > 0.5) {
+    out.push({
+      tipo: "Concentração de despesa", categoria: topCat[0],
+      desc: `"${topCat[0]}" representa ${Math.round((topCat[1] / totalOut) * 100)}% de tudo que saiu no mês (${brl(topCat[1])} de ${brl(totalOut)}). Concentração alta reduz a flexibilidade do orçamento.`,
+      valor: topCat[1], prioridade: "média",
+    });
+  }
+
+  // pagamentos repetidos (mesmo valor + mesmo favorecido normalizado) 3x ou mais no mês — possível assinatura não identificada
+  const byPayee = {};
+  for (const t of curTx) {
+    if (t.amount >= 0) continue;
+    const key = normalize(t.desc).replace(/\d+/g, "").slice(0, 30) + "|" + Math.abs(t.amount).toFixed(2);
+    (byPayee[key] = byPayee[key] || []).push(t);
+  }
+  for (const arr of Object.values(byPayee)) {
+    if (arr.length >= 3) {
+      out.push({
+        tipo: "Pagamentos repetidos", categoria: catOfDefault(arr[0]),
+        desc: `${arr.length}x o mesmo valor (${brl(Math.abs(arr[0].amount))}) para "${arr[0].desc.slice(0, 30)}" neste mês. Se for assinatura recorrente, cadastre em "A pagar" para acompanhar; se for coincidência, ignore.`,
+        valor: Math.abs(arr[0].amount) * arr.length, prioridade: "baixa",
+      });
+    }
+  }
+
+  return out.sort((a, b) => {
+    const rank = { alta: 0, média: 1, baixa: 2 };
+    return rank[a.prioridade] - rank[b.prioridade];
+  });
+}
+
+// ---------- 5) Score Financeiro Meton (combina tudo) ----------
+function computeMetonScore({ healthScore, dataQuality, separation, budgetOverCount, taxBehind }) {
+  let score = healthScore * 0.40 + dataQuality.score * 0.20 + separation.score * 0.25;
+  score -= Math.min(10, budgetOverCount * 3);
+  if (taxBehind) score -= 5;
+  score = Math.max(0, Math.min(100, Math.round(score)));
+  const label =
+    score >= 85 ? "Estrutura financeira sólida" : score >= 70 ? "Estrutura saudável, com pontos de melhoria"
+    : score >= 55 ? "Atenção" : score >= 40 ? "Risco elevado" : "Situação crítica";
+  return { score, label };
+}
+
+// ---------- 6) Plano de ação (gerado por regras a partir do que foi encontrado) ----------
+function buildActionPlan({ dataQuality, separation, anomalies, budgetStatus, taxReserve, forecast, goals }) {
+  const imediato = [], curto = [], medio = [];
+  if (dataQuality.dupCount > 0) imediato.push(`Revisar ${dataQuality.dupCount} possível(is) duplicidade(s) em Ajustes → Conferir duplicidades. Impacto: até ${brl(dataQuality.dupCount * 50)} de distorção estimada.`);
+  if (dataQuality.invalidCount > 0) imediato.push(`Corrigir ${dataQuality.invalidCount} lançamento(s) com data inválida em Ajustes.`);
+  if (forecast.daysToZero !== null) imediato.push(`Caixa pode zerar em ~${forecast.daysToZero} dias no ritmo atual. Revisar saídas ou antecipar recebimentos esta semana.`);
+  const overBudget = budgetStatus.filter((b) => b.spent > b.limit);
+  if (overBudget.length) imediato.push(`Orçamento estourado em: ${overBudget.map((b) => b.category).join(", ")}. Revisar gastos da semana nessas categorias.`);
+
+  if (dataQuality.uncatPct > 0.2) curto.push(`${Math.round(dataQuality.uncatPct * 100)}% dos lançamentos estão sem categoria clara ("Outros"). Categorize os maiores valores — cada correção vira regra permanente.`);
+  if (!separation.hasFormalProlabore && separation.transfersPerMonth > 0) curto.push(`Formalizar um pró-labore fixo mensal em vez de transferências avulsas entre PF e PJ — facilita a separação patrimonial e a apuração tributária.`);
+  if (taxReserve.taxEnabled !== false && taxReserve.remaining > 0) curto.push(`Separar ${brl(taxReserve.remaining)} para tributos deste mês antes de usar o caixa da PJ.`);
+  if (goals.length === 0) curto.push(`Criar ao menos uma meta (ex.: reserva de emergência) para direcionar a sobra mensal com propósito.`);
+
+  if (separation.score < 55) medio.push(`Reduzir a mistura patrimonial PF/PJ (índice atual: ${separation.score}/100): abrir conta exclusiva para despesas pessoais pagas pela PJ e vice-versa.`);
+  const reserveGoal = goals.find((g) => /reserva/i.test(g.name));
+  if (!reserveGoal) medio.push(`Definir meta explícita de reserva de emergência (3 a 6 meses de despesas) e acompanhar a projeção mensal.`);
+  if (dataQuality.gapMonths > 0) medio.push(`Há ${dataQuality.gapMonths} mês(es) sem nenhum lançamento no período analisado — importar o histórico ausente melhora a confiabilidade das médias e projeções.`);
+
+  return { imediato, curto, medio };
+}
+
 /* ---------- previsão de fluxo de caixa (retrospecto + contas futuras) ---------- */
 
 function buildForecast({ tx, bills, saldoTotal, wallet, catOf }) {
@@ -942,19 +1150,18 @@ function buildForecast({ tx, bills, saldoTotal, wallet, catOf }) {
   const avgNet = avgIn - avgOut; // saldo médio que sobra por mês
 
   // contas a pagar/receber já cadastradas nos próximos 90 dias
-  const todayKey = todayISO();
-  const today = new Date(todayKey + "T12:00:00");
+  const today = new Date(todayISO());
   const horizons = [30, 60, 90];
   const upcoming = bills.filter((b) => !b.paid).filter((b) => wallet === "Tudo" || b.wallet === wallet);
   const proj = horizons.map((h) => {
     const limit = new Date(today); limit.setDate(limit.getDate() + h);
-    const limitKey = limit.toISOString().slice(0, 10);
     let billsPay = 0, billsRecv = 0;
     for (const b of upcoming) {
-      const amountInWindow = provisionInWindow(b, todayKey, limitKey);
-      if (!amountInWindow) continue;
-      if (b.type === "pagar") billsPay += amountInWindow;
-      else billsRecv += amountInWindow;
+      const due = new Date(b.dueDate);
+      if (due >= today && due <= limit) {
+        if (b.type === "pagar") billsPay += b.amount;
+        else billsRecv += b.amount;
+      }
     }
     // projeção = saldo atual + (fluxo médio proporcional aos meses) + contas conhecidas do período
     const months = h / 30;
@@ -1530,13 +1737,12 @@ function ReportModal({ tx, bills, catOf, saldoTotal, userName, contacts, onSaveC
       {/* folha de envio WhatsApp para qualquer contato */}
       {showWa && (
         <div className="fixed inset-0 z-[55] flex items-end sm:items-center justify-center" style={{ background: "rgba(20,83,45,0.5)" }} onClick={() => setShowWa(false)}>
-          <div role="dialog" aria-modal="true" aria-labelledby="whatsapp-title"
-            className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 id="whatsapp-title" className="mt-display font-bold text-base flex items-center gap-2">
+              <h3 className="mt-display font-bold text-base flex items-center gap-2">
                 <Share2 size={18} style={{ color: "#25D366" }} /> Enviar por WhatsApp
               </h3>
-              <button type="button" onClick={() => setShowWa(false)} className="text-stone-400" aria-label="Fechar envio por WhatsApp"><X size={20} /></button>
+              <button onClick={() => setShowWa(false)} className="text-stone-400"><X size={20} /></button>
             </div>
 
             {/* digitar número */}
@@ -1942,6 +2148,11 @@ function AuthScreen({ users, onAuthed, onCreateFirst, onAddUser, onResetAccess, 
     setBusy(false);
   };
 
+  const social = (provider) => {
+    setErr("");
+    setInfo(`Entrar com ${provider} estará disponível na versão publicada (exige servidor OAuth).`);
+  };
+
   return (
     <div className="min-h-screen flex flex-col" style={{ background: NUDE }}>
       <style>{fontStyles}</style>
@@ -2035,8 +2246,8 @@ function AuthScreen({ users, onAuthed, onCreateFirst, onAddUser, onResetAccess, 
           </div>
           <div className="grid grid-cols-3 gap-2">
             {[["Google", "#DB4437", "G"], ["Microsoft", "#0078D4", "M"], ["Apple", "#111111", ""]].map(([id, color, letter]) => (
-              <button key={id} type="button" disabled aria-disabled="true" title={`${id} estará disponível quando o OAuth estiver configurado`}
-                className="py-2.5 rounded-xl border border-stone-300 bg-stone-50 flex items-center justify-center gap-1.5 text-sm font-semibold text-stone-500 opacity-65 cursor-not-allowed">
+              <button key={id} onClick={() => social(id)}
+                className="py-2.5 rounded-xl border border-stone-300 bg-white flex items-center justify-center gap-1.5 text-sm font-semibold text-stone-700">
                 <span className="mt-display font-extrabold" style={{ color }}>{letter}</span>{id}
               </button>
             ))}
@@ -2180,6 +2391,7 @@ export default function MetonFinanceira() {
   const [showDRE, setShowDRE] = useState(false);
   const [showGoals, setShowGoals] = useState(false);
   const [showDupCheck, setShowDupCheck] = useState(false);
+  const [showAudit, setShowAudit] = useState(false);
   const [showAddUser, setShowAddUser] = useState(false);
   const [contacts, setContacts] = useState([]);
   const [showChangePass, setShowChangePass] = useState(false);
@@ -2383,7 +2595,7 @@ export default function MetonFinanceira() {
     const curLabel = monthFull(nowKey);
     const healthMonths = last3.filter((k) => flowTx.some((t) => monthKey(t.date) === k));
     const periodLabel = healthMonths.length
-      ? `${monthLabel(healthMonths[0])}–${monthLabel(healthMonths[healthMonths.length - 1])}`
+      ? `${monthLabel(healthMonths[healthMonths.length - 1])}–${monthLabel(healthMonths[0])}`
       : "sem histórico suficiente";
 
     return { saldoPF, saldoPJ, inMonth, outMonth, evolution, savings, commit, reserve, score, topCats, totalOut, methods, curLabel, periodLabel, monthCount: mCount };
@@ -2690,7 +2902,7 @@ export default function MetonFinanceira() {
   };
 
   const exportBackup = () => {
-    const blob = new Blob([JSON.stringify({ tx, bills, rules, contacts, settings, goals, version: 12 }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ tx, bills, rules, contacts, version: 11 }, null, 2)], { type: "application/json" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = `meton-backup-${todayISO()}.json`;
@@ -2718,19 +2930,12 @@ export default function MetonFinanceira() {
           const phones = new Set(p.map((c) => c.phone));
           return [...p, ...data.contacts.filter((c) => !phones.has(c.phone))];
         });
-        if (data.settings) setSettings((s) => ({ ...s, ...data.settings, budgets: { ...(s.budgets || {}), ...(data.settings.budgets || {}) } }));
-        if (Array.isArray(data.goals)) setGoals((p) => {
-          const seen = new Set(p.map((g) => g.id || normalize(g.name)));
-          return [...p, ...data.goals.filter((g) => !seen.has(g.id || normalize(g.name)))];
-        });
         setToast(`Backup mesclado: +${newTx.length} lançamento(s).`);
       } else {
         setTx((data.tx || []).sort((a, b) => b.date.localeCompare(a.date)));
         setBills(data.bills || []);
         if (Array.isArray(data.rules) && data.rules.length) setRules(data.rules);
         if (Array.isArray(data.contacts)) setContacts(data.contacts);
-        if (data.settings) setSettings((s) => ({ ...s, ...data.settings, budgets: data.settings.budgets || {} }));
-        if (Array.isArray(data.goals)) setGoals(data.goals);
         setToast("Backup restaurado (dados substituídos).");
       }
     } catch (e) {
@@ -2758,8 +2963,7 @@ export default function MetonFinanceira() {
         : `${due.length} contas vencendo`;
       const body = due.slice(0, 3).map((b) => `${b.desc} — ${brl(b.amount)}`).join("\n")
         + (due.length > 3 ? `\n+${due.length - 3} outra(s)` : "");
-      const iconUrl = `${import.meta.env.BASE_URL}pwa-192x192.png`;
-      const opts = { body, icon: iconUrl, badge: iconUrl, tag: "meton-vencimentos" };
+      const opts = { body, icon: "/pwa-192x192.png", badge: "/pwa-192x192.png", tag: "meton-vencimentos" };
       const reg = await navigator.serviceWorker?.getRegistration?.();
       if (reg?.showNotification) reg.showNotification(title, opts);
       else new Notification(title, opts);
@@ -2950,7 +3154,7 @@ export default function MetonFinanceira() {
                   <div className="mt-mono text-base font-semibold mt-1">{brl(metrics.outMonth)}</div>
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-2 mt-4">
+              <div className="grid grid-cols-2 gap-2 mt-4">
                 <button onClick={() => setShowReport(true)}
                   className="py-2.5 rounded-xl font-semibold text-[13px] flex items-center justify-center gap-1"
                   style={{ background: LIGHT, color: DARK }}>
@@ -2965,6 +3169,11 @@ export default function MetonFinanceira() {
                   className="py-2.5 rounded-xl font-semibold text-[13px] flex items-center justify-center gap-1 border"
                   style={{ borderColor: LIGHT, color: LIGHT }}>
                   <TrendingUp size={14} /> Comparar
+                </button>
+                <button onClick={() => setShowAudit(true)}
+                  className="py-2.5 rounded-xl font-semibold text-[13px] flex items-center justify-center gap-1 border"
+                  style={{ borderColor: LIGHT, color: LIGHT }}>
+                  <Search size={14} /> Auditoria
                 </button>
               </div>
             </>
@@ -3012,11 +3221,11 @@ export default function MetonFinanceira() {
                     <p className="text-sm text-stone-400">Ainda sem histórico suficiente para prever. Importe mais meses.</p>
                   ) : (
                     <>
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-center">
+                      <div className="grid grid-cols-3 gap-2 text-center">
                         {forecast.proj.map((p) => (
-                          <div key={p.horizon} className="rounded-xl p-2.5 min-w-0" style={{ background: NUDE }}>
+                          <div key={p.horizon} className="rounded-xl p-2.5" style={{ background: NUDE }}>
                             <div className="text-[10px] text-stone-500 font-semibold">{p.horizon} dias</div>
-                            <div className={`mt-mono text-[13px] sm:text-sm font-bold mt-1 break-words ${p.projected >= 0 ? "text-green-800" : "text-rose-600"}`}>
+                            <div className={`mt-mono text-sm font-bold mt-1 ${p.projected >= 0 ? "text-green-800" : "text-rose-600"}`}>
                               {brl(p.projected)}
                             </div>
                           </div>
@@ -3367,8 +3576,7 @@ export default function MetonFinanceira() {
                               <div className={`mt-mono text-sm font-semibold ${t.amount >= 0 ? "text-green-800" : "text-stone-800"}`}>
                                 {t.amount >= 0 ? "+" : ""}{brl(t.amount)}
                               </div>
-                              <button type="button" aria-label={`Excluir lançamento ${t.desc}`} title="Excluir lançamento"
-                                onClick={() => { if (window.confirm(`Excluir "${t.desc}" (${brl(t.amount)})?`)) setTx((p) => p.filter((x) => x.id !== t.id)); }} className="text-stone-300 mt-1">
+                              <button onClick={() => { if (window.confirm(`Excluir "${t.desc}" (${brl(t.amount)})?`)) setTx((p) => p.filter((x) => x.id !== t.id)); }} className="text-stone-300 mt-1">
                                 <Trash2 size={13} />
                               </button>
                             </div>
@@ -3538,10 +3746,10 @@ export default function MetonFinanceira() {
                               className="text-[11px] font-bold px-2.5 py-1 rounded-full text-white" style={{ background: DARK }}>
                               {b.type === "pagar" ? "Paguei" : "Recebi"}
                             </button>
-                            <button type="button" onClick={() => setEditingBill(b)} className="text-stone-400" title="Editar" aria-label={`Editar conta ${b.desc}`}>
+                            <button onClick={() => setEditingBill(b)} className="text-stone-400" title="Editar">
                               <Pencil size={14} />
                             </button>
-                            <button type="button" onClick={() => { if (window.confirm(`Excluir "${b.desc}"?`)) setBills((p) => p.filter((x) => x.id !== b.id)); }} className="text-stone-300" title="Excluir" aria-label={`Excluir conta ${b.desc}`}>
+                            <button onClick={() => { if (window.confirm(`Excluir "${b.desc}"?`)) setBills((p) => p.filter((x) => x.id !== b.id)); }} className="text-stone-300" title="Excluir">
                               <Trash2 size={14} />
                             </button>
                           </div>
@@ -3665,7 +3873,7 @@ export default function MetonFinanceira() {
                       {pending.rows.length} lançamento(s) · {pending.dupes} já existiam · conta {importWallet}
                     </div>
                   </div>
-                  <button type="button" onClick={() => setPending(null)} className="text-stone-400 shrink-0" aria-label="Fechar prévia da importação"><X size={18} /></button>
+                  <button onClick={() => setPending(null)} className="text-stone-400 shrink-0"><X size={18} /></button>
                 </div>
                 {(pending.isPdf || pending.isPhoto) && (
                   <div className="text-[11px] rounded-xl px-3 py-2 mb-3 flex items-start gap-1.5" style={{ background: "#fffbeb", color: "#92400e" }}>
@@ -3683,9 +3891,7 @@ export default function MetonFinanceira() {
                         <input inputMode="decimal" value={r.amountStr ?? String(r.amount).replace(".", ",")}
                           onChange={(e) => updatePendingRow(i, "amountStr", e.target.value)}
                           className={`flex-1 text-right mt-mono text-sm font-semibold rounded-lg border border-stone-200 px-2 py-1 focus:outline-none ${r.amount >= 0 ? "text-green-800" : "text-stone-800"}`} />
-                        <button type="button" onClick={() => removePendingRow(i)} className="text-stone-300 shrink-0" aria-label={`Remover linha importada ${i + 1}`}>
-                          <Trash2 size={14} />
-                        </button>
+                        <button onClick={() => removePendingRow(i)} className="text-stone-300 shrink-0"><Trash2 size={14} /></button>
                       </div>
                       <input value={r.desc} placeholder="Descrição"
                         onChange={(e) => updatePendingRow(i, "desc", e.target.value)}
@@ -3758,12 +3964,10 @@ export default function MetonFinanceira() {
                   </div>
                   {isAdmin && u.id !== currentUser.id && (
                     <div className="flex items-center gap-3 shrink-0">
-                      <button type="button" onClick={() => setResetTarget(u)} className="text-stone-400" title="Redefinir senha" aria-label={`Redefinir senha de ${u.name}`}>
+                      <button onClick={() => setResetTarget(u)} className="text-stone-400" title="Redefinir senha">
                         <KeyRound size={14} />
                       </button>
-                      <button type="button" onClick={() => removeUser(u)} className="text-stone-300" aria-label={`Remover usuário ${u.name}`}>
-                        <Trash2 size={14} />
-                      </button>
+                      <button onClick={() => removeUser(u)} className="text-stone-300"><Trash2 size={14} /></button>
                     </div>
                   )}
                 </div>
@@ -3795,9 +3999,7 @@ export default function MetonFinanceira() {
                         <div className="text-[11px] text-stone-400">{formatPhone(c.phone)}</div>
                       </div>
                     </div>
-                    <button type="button" onClick={() => setContacts((p) => p.filter((x) => x.id !== c.id))} className="text-stone-300" aria-label={`Remover contato ${c.name}`}>
-                      <Trash2 size={14} />
-                    </button>
+                    <button onClick={() => setContacts((p) => p.filter((x) => x.id !== c.id))} className="text-stone-300"><Trash2 size={14} /></button>
                   </div>
                 ))}
               </Card>
@@ -3823,9 +4025,7 @@ export default function MetonFinanceira() {
               {rules.map((r, i) => (
                 <div key={i} className="p-3 flex items-center justify-between text-sm">
                   <span className="text-stone-600">"{r.keyword}" <ChevronRight size={12} className="inline text-stone-300" /> <b>{r.category}</b></span>
-                  <button type="button" onClick={() => setRules((p) => p.filter((_, j) => j !== i))} className="text-stone-300" aria-label={`Remover regra ${r.keyword}`}>
-                    <Trash2 size={14} />
-                  </button>
+                  <button onClick={() => setRules((p) => p.filter((_, j) => j !== i))} className="text-stone-300"><Trash2 size={14} /></button>
                 </div>
               ))}
             </Card>
@@ -4026,6 +4226,11 @@ export default function MetonFinanceira() {
       {showDupCheck && (
         <DupCheckModal tx={tx} setTx={setTx} onClose={() => setShowDupCheck(false)} setToast={setToast} />
       )}
+      {showAudit && (
+        <AuditModal tx={tx} bills={bills} goals={goals} settings={settings} setSettings={setSettings} catOf={catOf}
+          metrics={metrics} forecast={forecast} taxReserve={taxReserve} budgetStatus={budgetStatus}
+          onClose={() => setShowAudit(false)} setToast={setToast} />
+      )}
       {showChangePass && (
         <ChangePasswordModal user={currentUser} onClose={() => setShowChangePass(false)} onSave={changeMyPassword} setToast={setToast} />
       )}
@@ -4078,14 +4283,12 @@ export default function MetonFinanceira() {
 /* ---------- modais ---------- */
 
 function ModalShell({ title, onClose, children }) {
-  const titleId = useId();
   return (
     <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center" style={{ background: "rgba(20,83,45,0.45)" }} onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-labelledby={titleId}
-        className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white w-full max-w-lg rounded-t-3xl sm:rounded-3xl p-5" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 32px)" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-4">
-          <h3 id={titleId} className="mt-display font-bold text-base">{title}</h3>
-          <button type="button" aria-label="Fechar" onClick={onClose} className="text-stone-400"><X size={20} /></button>
+          <h3 className="mt-display font-bold text-base">{title}</h3>
+          <button onClick={onClose} className="text-stone-400"><X size={20} /></button>
         </div>
         {children}
       </div>
@@ -4103,11 +4306,8 @@ function AddTxModal({ onClose, onSave, rules }) {
   const [wallet, setWallet] = useState("PF");
   const [cat, setCat] = useState("");
   const [catTouched, setCatTouched] = useState(false);
-  const [cls, setCls] = useState("");
-  const [clsTouched, setClsTouched] = useState(false);
   // sugere categoria automaticamente pela descrição, até o usuário mexer
   const effectiveCat = catTouched ? cat : (desc.trim() ? applyRules(desc, rules || DEFAULT_RULES) : "");
-  const effectiveCls = clsTouched ? cls : suggestClassification(effectiveCat || "Outros", desc, wallet, type === "entrada" ? "receber" : "pagar");
   const ok = desc.trim() && parseBRNumber(amount) !== null;
   return (
     <ModalShell title="Lançamento manual" onClose={onClose}>
@@ -4120,17 +4320,6 @@ function AddTxModal({ onClose, onSave, rules }) {
           <select className={inputCls} value={effectiveCat || "Outros"} onChange={(e) => { setCat(e.target.value); setCatTouched(true); }}>
             {CATEGORIES.map((c) => <option key={c}>{c}</option>)}
           </select>
-        </div>
-        <div>
-          <label className="block text-xs text-stone-500 mb-1 pl-1">
-            Classificação {!clsTouched && desc.trim() && <span style={{ color: NUDE_DEEP }}>(sugerida)</span>}
-          </label>
-          <select className={inputCls} value={effectiveCls} onChange={(e) => { setCls(e.target.value); setClsTouched(true); }}>
-            {CLASSIFICATIONS.map((c) => <option key={c}>{c}</option>)}
-          </select>
-          <p className="text-[10px] text-stone-400 mt-1 pl-1 leading-snug">
-            Natureza contábil usada no resumo por natureza e no DRE simplificado.
-          </p>
         </div>
         <div className="flex gap-2">
           {[["saida", "Saída"], ["entrada", "Entrada"]].map(([v, l]) => (
@@ -4149,7 +4338,7 @@ function AddTxModal({ onClose, onSave, rules }) {
         <button disabled={!ok}
           onClick={() => {
             const v = Math.abs(parseBRNumber(amount));
-            onSave({ desc: desc.trim(), amount: type === "saida" ? -v : v, date, wallet, category: effectiveCat || "Outros", classification: effectiveCls || "Não classificado" });
+            onSave({ desc: desc.trim(), amount: type === "saida" ? -v : v, date, wallet, category: effectiveCat || "Outros" });
           }}
           className="w-full py-2.5 rounded-xl text-white font-semibold text-sm disabled:opacity-40" style={{ background: DARK }}>
           Salvar lançamento
@@ -4355,11 +4544,9 @@ function GoalsModal({ goals, setGoals, onClose, setToast }) {
                   </div>
                 </div>
                 <button onClick={() => aporte(g)} className="text-[11px] font-bold px-2 py-1 rounded-lg text-white" style={{ background: DARK }}>+ Aporte</button>
-                <button type="button" aria-label={`Editar meta ${g.name}`}
-                  onClick={() => { setEditingId(g.id); setName(g.name); setTarget(String(g.target).replace(".", ",")); setSaved(String(g.saved).replace(".", ",")); setDeadline(g.deadline || ""); }}
+                <button onClick={() => { setEditingId(g.id); setName(g.name); setTarget(String(g.target).replace(".", ",")); setSaved(String(g.saved).replace(".", ",")); setDeadline(g.deadline || ""); }}
                   className="p-1.5 text-stone-500"><Pencil size={14} /></button>
-                <button type="button" aria-label={`Excluir meta ${g.name}`}
-                  onClick={() => { if (window.confirm(`Excluir a meta "${g.name}"?`)) { setGoals((p) => p.filter((x) => x.id !== g.id)); if (editingId === g.id) reset(); } }}
+                <button onClick={() => { if (window.confirm(`Excluir a meta "${g.name}"?`)) { setGoals((p) => p.filter((x) => x.id !== g.id)); if (editingId === g.id) reset(); } }}
                   className="p-1.5 text-stone-400"><Trash2 size={14} /></button>
               </div>
             ))}
@@ -4391,6 +4578,238 @@ function GoalsModal({ goals, setGoals, onClose, setToast }) {
         </div>
       </div>
     </ModalShell>
+  );
+}
+
+function AuditModal({ tx, bills, goals, settings, setSettings, catOf, metrics, forecast, taxReserve, budgetStatus, onClose, setToast }) {
+  const [wallet, setWallet] = useState("Tudo");
+  const [balanceInput, setBalanceInput] = useState(
+    settings.bankBalances?.[wallet] !== undefined ? String(settings.bankBalances[wallet]).replace(".", ",") : ""
+  );
+
+  const dataQ = useMemo(() => computeDataQuality(tx, bills), [tx, bills]);
+  const sep = useMemo(() => computeSeparationIndex(tx, bills), [tx, bills]);
+  const anomalies = useMemo(() => computeAnomalies({ tx, catOf }), [tx, catOf]);
+  const recon = useMemo(() => {
+    const stored = settings.bankBalances?.[wallet];
+    return computeReconciliation(tx, wallet, stored);
+  }, [tx, wallet, settings.bankBalances]);
+  const metonScore = useMemo(() => computeMetonScore({
+    healthScore: metrics.score, dataQuality: dataQ, separation: sep,
+    budgetOverCount: budgetStatus.filter((b) => b.spent > b.limit).length,
+    taxBehind: taxReserve.remaining > 0,
+  }), [metrics.score, dataQ, sep, budgetStatus, taxReserve]);
+  const plan = useMemo(() => buildActionPlan({ dataQuality: dataQ, separation: sep, anomalies, budgetStatus, taxReserve, forecast, goals }),
+    [dataQ, sep, anomalies, budgetStatus, taxReserve, forecast, goals]);
+
+  const saveBalance = () => {
+    const v = balanceInput.trim() === "" ? undefined : parseBRNumber(balanceInput);
+    setSettings((s) => ({ ...s, bankBalances: { ...(s.bankBalances || {}), [wallet]: v } }));
+    setToast(v === undefined ? "Referência removida." : "Saldo de referência salvo.");
+  };
+
+  const scoreColor = (n) => (n >= 75 ? "#15803d" : n >= 55 ? "#d97706" : "#e11d48");
+
+  const copyReport = async () => {
+    const lines = [
+      `AUDITORIA METON FINANCEIRA`,
+      `Período analisado: ${dataQ.monthsSpan} mês(es) · ${dataQ.total} lançamento(s) · carteira: ${wallet}`,
+      ``,
+      `ESCOPO E LIMITAÇÕES`,
+      `Análise baseada apenas em lançamentos e contas cadastrados no app. Não há notas fiscais, contratos, comprovantes`,
+      `ou escrituração contábil anexados — conclusões sobre esses pontos ficam "pendentes de validação".`,
+      ``,
+      `QUALIDADE DOS DADOS: ${dataQ.score}/100 (${dataQ.label})`,
+      `- Lançamentos com data inválida: ${dataQ.invalidCount}`,
+      `- Possíveis duplicidades: ${dataQ.dupCount}`,
+      `- Sem categoria clara: ${dataQ.uncategorized} (${(dataQ.uncatPct * 100).toFixed(0)}%)`,
+      `- Meses sem nenhum lançamento no período: ${dataQ.gapMonths}`,
+      ``,
+      `SEPARAÇÃO PATRIMONIAL PF/PJ: ${sep.score}/100 (${sep.label})`,
+      `- Gasto pessoal saindo da PJ: ${(sep.crossPJPct * 100).toFixed(1)}% das despesas PJ`,
+      `- Gasto de empresa saindo da PF: ${(sep.crossPFPct * 100).toFixed(1)}% das despesas PF`,
+      `- Pró-labore formalizado (conta recorrente): ${sep.hasFormalProlabore ? "Sim" : "Não"}`,
+      ``,
+      `CONCILIAÇÃO (${wallet}): ${RECON_LABEL[recon.status]}`,
+      recon.declared !== null ? `- Calculado: ${brl(recon.calculated)} · Declarado: ${brl(recon.declared)} · Diferença: ${brl(recon.diff)}` : `- Nenhum saldo de referência informado.`,
+      ``,
+      `SCORE FINANCEIRO METON: ${metonScore.score}/100 (${metonScore.label})`,
+      ``,
+      `ANOMALIAS (${anomalies.length})`,
+      ...(anomalies.length ? anomalies.map((a) => `- [${a.prioridade}] ${a.tipo}: ${a.desc}`) : ["Nenhuma anomalia relevante encontrada com os critérios aplicados."]),
+      ``,
+      `PLANO DE AÇÃO`,
+      `Imediato (48h):`, ...(plan.imediato.length ? plan.imediato.map((x) => `- ${x}`) : ["- Nada crítico pendente."]),
+      `Curto prazo (30 dias):`, ...(plan.curto.length ? plan.curto.map((x) => `- ${x}`) : ["- Sem pendências relevantes."]),
+      `Médio prazo (90 dias):`, ...(plan.medio.length ? plan.medio.map((x) => `- ${x}`) : ["- Sem pendências relevantes."]),
+      ``,
+      `Esta análise foi elaborada com base nos documentos e informações disponibilizados. A ausência de extratos completos, comprovantes, notas fiscais, contratos, saldos, obrigações e registros contábeis pode limitar as conclusões. O relatório possui finalidade gerencial e educacional e não substitui auditoria independente, escrituração contábil, consultoria tributária formal, assessoria jurídica ou recomendação de investimento.`,
+    ];
+    try { await navigator.clipboard.writeText(lines.join("\n")); setToast("Relatório de auditoria copiado."); }
+    catch (e) { setToast("Não consegui copiar neste navegador."); }
+  };
+
+  const Bar = ({ value, color }) => (
+    <div className="h-1.5 rounded-full mt-1.5" style={{ background: "#f5f5f4" }}>
+      <div className="h-1.5 rounded-full" style={{ width: `${Math.max(3, value)}%`, background: color }} />
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-[70] flex flex-col" style={{ background: NUDE }}>
+      <div className="text-white px-4 pb-4 shrink-0" style={{ background: DARK, paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+        <div className="max-w-lg mx-auto">
+          <div className="flex items-center justify-between mb-3">
+            <span className="mt-display font-bold flex items-center gap-2"><Search size={17} /> Auditoria Meton</span>
+            <button onClick={onClose} className="text-green-200 p-2 -m-2" aria-label="Fechar"><X size={22} /></button>
+          </div>
+          <div className="flex rounded-xl overflow-hidden w-fit" style={{ background: "#104225" }}>
+            {["PF", "PJ", "Tudo"].map((x) => (
+              <button key={x} onClick={() => { setWallet(x); setBalanceInput(settings.bankBalances?.[x] !== undefined ? String(settings.bankBalances[x]).replace(".", ",") : ""); }}
+                className="px-3 py-1 text-xs font-bold" style={wallet === x ? { background: LIGHT, color: DARK } : { color: "#86efac" }}>{x}</button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-lg mx-auto p-4 space-y-4">
+
+          <Card className="p-3.5" style={{ background: NUDE }}>
+            <p className="text-[10.5px] text-stone-600 leading-relaxed">
+              <b>Escopo:</b> {dataQ.total} lançamento(s) analisados, {dataQ.monthsSpan} mês(es) de histórico. Baseado
+              apenas no que está lançado no app — sem notas fiscais, contratos ou comprovantes. Pontos que dependeriam
+              desses documentos aparecem como <b>pendente de validação</b>.
+            </p>
+          </Card>
+
+          {/* Score Meton */}
+          <Card className="p-5 text-center">
+            <div className="text-[11px] font-bold uppercase tracking-wide text-stone-400">Score Financeiro Meton</div>
+            <div className="mt-mono text-4xl font-bold mt-1" style={{ color: scoreColor(metonScore.score) }}>{metonScore.score}</div>
+            <div className="text-sm font-semibold mt-1" style={{ color: scoreColor(metonScore.score) }}>{metonScore.label}</div>
+            <p className="text-[10px] text-stone-400 mt-2 leading-snug">
+              Combina saúde financeira (40%), qualidade dos dados (20%) e separação patrimonial (25%), com ajustes por orçamento e impostos em atraso.
+            </p>
+          </Card>
+
+          {/* Qualidade dos dados */}
+          <Card className="p-4">
+            <div className="flex justify-between items-baseline">
+              <SectionTitle>Qualidade dos dados</SectionTitle>
+              <span className="mt-mono text-sm font-bold" style={{ color: scoreColor(dataQ.score) }}>{dataQ.score}/100</span>
+            </div>
+            <Bar value={dataQ.score} color={scoreColor(dataQ.score)} />
+            <p className="text-[11px] text-stone-500 mt-1">{dataQ.label}</p>
+            <div className="mt-2 space-y-1 text-[11.5px] text-stone-600">
+              <div className="flex justify-between"><span>Datas inválidas</span><span className="mt-mono">{dataQ.invalidCount}</span></div>
+              <div className="flex justify-between"><span>Possíveis duplicidades</span><span className="mt-mono">{dataQ.dupCount}</span></div>
+              <div className="flex justify-between"><span>Sem categoria clara</span><span className="mt-mono">{dataQ.uncategorized} ({(dataQ.uncatPct * 100).toFixed(0)}%)</span></div>
+              <div className="flex justify-between"><span>Meses sem lançamento (no período)</span><span className="mt-mono">{dataQ.gapMonths}</span></div>
+            </div>
+          </Card>
+
+          {/* Separação PF/PJ */}
+          <Card className="p-4">
+            <div className="flex justify-between items-baseline">
+              <SectionTitle>Separação patrimonial PF/PJ</SectionTitle>
+              <span className="mt-mono text-sm font-bold" style={{ color: scoreColor(sep.score) }}>{sep.score}/100</span>
+            </div>
+            <Bar value={sep.score} color={scoreColor(sep.score)} />
+            <p className="text-[11px] text-stone-500 mt-1">{sep.label}</p>
+            <div className="mt-2 space-y-1 text-[11.5px] text-stone-600">
+              <div className="flex justify-between"><span>Gasto pessoal saindo da PJ</span><span className="mt-mono">{(sep.crossPJPct * 100).toFixed(1)}%</span></div>
+              <div className="flex justify-between"><span>Gasto de empresa saindo da PF</span><span className="mt-mono">{(sep.crossPFPct * 100).toFixed(1)}%</span></div>
+              <div className="flex justify-between"><span>Pró-labore formalizado</span><span className="mt-mono">{sep.hasFormalProlabore ? "Sim" : "Não"}</span></div>
+            </div>
+          </Card>
+
+          {/* Conciliação */}
+          <Card className="p-4">
+            <SectionTitle>Conciliação bancária · {wallet}</SectionTitle>
+            <p className="text-[11px] text-stone-500 mb-2">
+              Informe o saldo que o extrato do banco mostra hoje para comparar com o calculado pelo Meton.
+            </p>
+            <div className="flex gap-2">
+              <input className={inputCls} placeholder="Saldo declarado pelo banco" inputMode="decimal"
+                value={balanceInput} onChange={(e) => setBalanceInput(e.target.value)} />
+              <button onClick={saveBalance} className="px-4 rounded-xl text-white text-sm font-bold" style={{ background: DARK }}>Salvar</button>
+            </div>
+            <div className="mt-3 rounded-xl p-3" style={{ background: NUDE }}>
+              <div className="flex justify-between text-[11px]">
+                <span className="text-stone-500">Calculado pelo Meton</span>
+                <span className="mt-mono font-semibold">{brl(recon.calculated)}</span>
+              </div>
+              {recon.declared !== null && (
+                <>
+                  <div className="flex justify-between text-[11px] mt-1">
+                    <span className="text-stone-500">Declarado pelo banco</span>
+                    <span className="mt-mono font-semibold">{brl(recon.declared)}</span>
+                  </div>
+                  <div className="flex justify-between text-[11px] mt-1 pt-1 border-t border-stone-200">
+                    <span className="font-semibold">Diferença</span>
+                    <span className={`mt-mono font-bold ${Math.abs(recon.diff) < 0.01 ? "text-green-700" : "text-rose-600"}`}>{brl(recon.diff)}</span>
+                  </div>
+                </>
+              )}
+              <div className="text-[11px] font-bold mt-2" style={{ color: recon.status === "conciliada" ? "#15803d" : recon.status === "sem_referencia" ? "#78716c" : "#d97706" }}>
+                {RECON_LABEL[recon.status]}
+              </div>
+            </div>
+          </Card>
+
+          {/* Anomalias */}
+          <Card className="p-4">
+            <SectionTitle>Anomalias detectadas ({anomalies.length})</SectionTitle>
+            {anomalies.length === 0 ? (
+              <p className="text-sm text-stone-400 mt-1">Nenhuma anomalia relevante com os critérios aplicados neste mês.</p>
+            ) : (
+              <div className="space-y-2.5 mt-2">
+                {anomalies.map((a, i) => (
+                  <div key={i} className="rounded-xl p-3" style={{ background: a.prioridade === "alta" ? "#fef2f2" : "#fffbeb" }}>
+                    <div className="flex justify-between items-baseline">
+                      <span className="text-[11px] font-bold" style={{ color: a.prioridade === "alta" ? "#b91c1c" : "#92400e" }}>{a.tipo}</span>
+                      <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded" style={{ background: a.prioridade === "alta" ? "#fecaca" : "#fde68a", color: a.prioridade === "alta" ? "#b91c1c" : "#92400e" }}>
+                        {a.prioridade}
+                      </span>
+                    </div>
+                    <p className="text-[11.5px] text-stone-700 mt-1 leading-snug">{a.desc}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {/* Plano de ação */}
+          <Card className="p-4">
+            <SectionTitle>Plano de ação</SectionTitle>
+            {[["Imediato (48h)", plan.imediato, "#e11d48"], ["Curto prazo (30 dias)", plan.curto, "#d97706"], ["Médio prazo (90 dias)", plan.medio, DARK]].map(([label, items, color]) => (
+              <div key={label} className="mt-3 first:mt-0">
+                <div className="text-[11px] font-bold uppercase tracking-wide" style={{ color }}>{label}</div>
+                {items.length === 0 ? (
+                  <p className="text-[11.5px] text-stone-400 mt-1">Nada pendente aqui.</p>
+                ) : (
+                  <ul className="mt-1 space-y-1.5">
+                    {items.map((x, i) => <li key={i} className="text-[11.5px] text-stone-700 leading-snug pl-3 relative before:content-['•'] before:absolute before:left-0" style={{ color: undefined }}>{x}</li>)}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </Card>
+
+          <button onClick={copyReport} className="w-full py-2.5 rounded-xl border border-stone-300 text-stone-700 font-semibold text-sm flex items-center justify-center gap-1.5 bg-white">
+            <Copy size={15} /> Copiar relatório de auditoria
+          </button>
+          <p className="text-[10px] text-stone-400 leading-relaxed px-1 pb-4">
+            Esta análise foi elaborada com base nos documentos e informações disponibilizados. A ausência de extratos
+            completos, comprovantes, notas fiscais, contratos, saldos, obrigações e registros contábeis pode limitar
+            as conclusões. O relatório possui finalidade gerencial e educacional e não substitui auditoria
+            independente, escrituração contábil, consultoria tributária formal, assessoria jurídica ou recomendação
+            de investimento.
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 

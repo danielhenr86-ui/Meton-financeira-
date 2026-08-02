@@ -26,11 +26,10 @@ if (typeof window !== "undefined" && !window.storage) {
       return { key, deleted: true };
     },
     async list(prefix = "") {
-      const fullPrefix = PFX + prefix;
       const keys = [];
       for (let i = 0; i < localStorage.length; i++) {
         const k = localStorage.key(i);
-        if (k && k.startsWith(fullPrefix)) keys.push(k.slice(PFX.length));
+        if (k && k.startsWith(PFX + prefix)) keys.push(k.slice(PFX.length));
       }
       return { keys, prefix };
     },
