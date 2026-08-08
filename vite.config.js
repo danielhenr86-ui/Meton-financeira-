@@ -2,8 +2,62 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
+function metonCfoDevApi() {
+  return {
+    name: "meton-cfo-dev-api",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use(async (request, response, next) => {
+        if ((request.url || "").split("?")[0] !== "/api/cfo") return next();
+        response.setHeader("Content-Type", "application/json; charset=utf-8");
+        response.setHeader("Cache-Control", "no-store");
+        if (request.method !== "POST") {
+          response.statusCode = 405;
+          response.setHeader("Allow", "POST");
+          response.end(JSON.stringify({ error: "method_not_allowed", message: "Use POST /api/cfo." }));
+          return;
+        }
+
+        try {
+          let raw = "";
+          for await (const chunk of request) {
+            raw += chunk;
+            if (raw.length > 100_000) {
+              response.statusCode = 413;
+              response.end(JSON.stringify({ error: "payload_too_large", message: "A fotografia financeira excedeu o limite permitido." }));
+              return;
+            }
+          }
+          let body;
+          try {
+            body = JSON.parse(raw || "{}");
+          } catch {
+            response.statusCode = 400;
+            response.end(JSON.stringify({ error: "invalid_json", message: "JSON invalido." }));
+            return;
+          }
+          const { analyzeCfo, toPublicCfoError } = await import("./api/_cfoAgent.js");
+          try {
+            const analysis = await analyzeCfo(body);
+            response.statusCode = 200;
+            response.end(JSON.stringify({ analysis }));
+          } catch (error) {
+            const publicError = toPublicCfoError(error);
+            response.statusCode = publicError.status;
+            response.end(JSON.stringify(publicError.body));
+          }
+        } catch {
+          response.statusCode = 500;
+          response.end(JSON.stringify({ error: "dev_api_error", message: "Falha no endpoint local do CFO Copilot." }));
+        }
+      });
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
+    metonCfoDevApi(),
     react(),
     VitePWA({
       registerType: "autoUpdate",

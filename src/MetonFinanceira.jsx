@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import Papa from "papaparse";
+import CfoCopilot from "./CfoCopilot.jsx";
+import { build13WeekCashForecast, buildCfoBillsSummary } from "./cfoSnapshot.js";
 import {
   Compass, ListOrdered, CalendarClock, Upload, Settings2, Plus, Trash2,
   TrendingUp, TrendingDown, CheckCircle2, AlertTriangle, Wallet, Landmark,
@@ -2392,6 +2394,7 @@ export default function MetonFinanceira() {
   const [showGoals, setShowGoals] = useState(false);
   const [showDupCheck, setShowDupCheck] = useState(false);
   const [showAudit, setShowAudit] = useState(false);
+  const [showCfoCopilot, setShowCfoCopilot] = useState(false);
   const [showAddUser, setShowAddUser] = useState(false);
   const [contacts, setContacts] = useState([]);
   const [showChangePass, setShowChangePass] = useState(false);
@@ -2702,6 +2705,116 @@ export default function MetonFinanceira() {
       .map((b) => ({ ...b, days: Math.round((new Date(b.dueDate) - now) / 86400000) }))
       .sort((a, b) => a.days - b.days);
   }, [bills, wallet]);
+
+  const cfoSnapshot = useMemo(() => {
+    const clip = (value, length) => String(value ?? "").slice(0, length);
+    const dataQuality = computeDataQuality(tx, bills);
+    const separation = computeSeparationIndex(tx, bills);
+    const anomalies = computeAnomalies({ tx, catOf });
+    const metonScore = computeMetonScore({
+      healthScore: metrics.score,
+      dataQuality,
+      separation,
+      budgetOverCount: budgetStatus.filter((item) => item.spent > item.limit).length,
+      taxBehind: taxReserve.remaining > 0,
+    });
+    const actionPlan = buildActionPlan({ dataQuality, separation, anomalies, budgetStatus, taxReserve, forecast, goals });
+    const currentMonth = monthKey(todayISO());
+    const managementPnl = buildDRE({ tx, mKey: currentMonth, wallet, catOf });
+    const startingCash = wallet === "PF" ? metrics.saldoPF : wallet === "PJ" ? metrics.saldoPJ : metrics.saldoPF + metrics.saldoPJ;
+    const cashForecast13Weeks = build13WeekCashForecast({
+      startingCash,
+      avgNetMonthly: forecast.avgNet,
+      bills,
+      wallet,
+      todayIso: todayISO(),
+    });
+    const billSummary = buildCfoBillsSummary({ bills, wallet, todayIso: todayISO() });
+
+    return {
+      version: 1,
+      generatedAt: new Date().toISOString(),
+      scope: wallet,
+      privacy: {
+        rawTransactionsIncluded: false,
+        transactionDescriptionsIncluded: false,
+      },
+      overview: {
+        balance: startingCash,
+        balancePF: metrics.saldoPF,
+        balancePJ: metrics.saldoPJ,
+        inflowCurrentMonth: metrics.inMonth,
+        outflowCurrentMonth: metrics.outMonth,
+        averageNetMonthly: forecast.avgNet,
+        savingsRate: metrics.savings,
+        incomeCommitmentRate: metrics.commit,
+        reserveMonths: metrics.reserve,
+        financialHealthScore: metrics.score,
+        analysisPeriod: metrics.periodLabel,
+      },
+      managementPnl,
+      cashForecast13Weeks,
+      cashForecast90Days: {
+        averageIn: forecast.avgIn,
+        averageOut: forecast.avgOut,
+        averageNet: forecast.avgNet,
+        daysToZero: forecast.daysToZero,
+        monthsUsed: forecast.monthsUsed,
+        projections: forecast.proj.map((item) => ({
+          horizonDays: item.horizon,
+          projectedCash: item.projected,
+          scheduledPayables: item.billsPay,
+          scheduledReceivables: item.billsRecv,
+        })),
+      },
+      bills: billSummary,
+      taxReserve,
+      budgets: budgetStatus.slice(0, 40).map((item) => ({
+        category: clip(item.category, 80),
+        spent: item.spent,
+        limit: item.limit,
+        percentUsed: item.pct,
+      })),
+      dataQuality: {
+        score: dataQuality.score,
+        label: dataQuality.label,
+        invalidDates: dataQuality.invalidCount,
+        likelyDuplicates: dataQuality.dupCount,
+        uncategorized: dataQuality.uncategorized,
+        uncategorizedRate: dataQuality.uncatPct,
+        missingMonths: dataQuality.gapMonths,
+        monthsCovered: dataQuality.monthsSpan,
+        transactions: dataQuality.total,
+      },
+      patrimonialSeparation: {
+        score: separation.score,
+        label: separation.label,
+        personalSpendFromBusinessRate: separation.crossPJPct,
+        businessSpendFromPersonalRate: separation.crossPFPct,
+        formalProlabore: separation.hasFormalProlabore,
+        transfersPerMonth: separation.transfersPerMonth,
+      },
+      metonScore,
+      anomalies: anomalies.slice(0, 20).map((item) => ({
+        type: clip(item.tipo, 120),
+        category: clip(item.categoria || "Sem categoria", 100),
+        value: Number(item.valor) || 0,
+        priority: item.prioridade,
+      })),
+      ruleBasedActionPlan: {
+        immediate: actionPlan.imediato.slice(0, 12).map((item) => clip(item, 300)),
+        shortTerm: actionPlan.curto.slice(0, 12).map((item) => clip(item, 300)),
+        mediumTerm: actionPlan.medio.slice(0, 12).map((item) => clip(item, 300)),
+      },
+      goals: goals.slice(0, 30).map((goal) => ({
+        name: clip(goal.name || "Meta sem nome", 120),
+        target: Math.max(0, Number(goal.target) || 0),
+        saved: Math.max(0, Number(goal.saved) || 0),
+        deadline: clip(goal.deadline || "", 32),
+      })),
+      ruleBasedInsights: radarInsights.slice(0, 15).map((item) => clip(item, 360)),
+    };
+  }, [tx, bills, wallet, catOf, metrics, forecast, budgetStatus, taxReserve, goals, radarInsights]);
 
   const alertCount = upcomingBills.filter((b) => b.days <= 7).length;
 
@@ -3174,6 +3287,11 @@ export default function MetonFinanceira() {
                   className="py-2.5 rounded-xl font-semibold text-[13px] flex items-center justify-center gap-1 border"
                   style={{ borderColor: LIGHT, color: LIGHT }}>
                   <Search size={14} /> Auditoria
+                </button>
+                <button onClick={() => setShowCfoCopilot(true)}
+                  className="col-span-2 py-2.5 rounded-xl font-semibold text-[13px] flex items-center justify-center gap-1.5 border"
+                  style={{ borderColor: LIGHT, color: DARK, background: LIGHT }}>
+                  <Sparkles size={15} /> CFO Copilot <span className="text-[9px] uppercase tracking-wider opacity-70">v1</span>
                 </button>
               </div>
             </>
@@ -4230,6 +4348,9 @@ export default function MetonFinanceira() {
         <AuditModal tx={tx} bills={bills} goals={goals} settings={settings} setSettings={setSettings} catOf={catOf}
           metrics={metrics} forecast={forecast} taxReserve={taxReserve} budgetStatus={budgetStatus}
           onClose={() => setShowAudit(false)} setToast={setToast} />
+      )}
+      {showCfoCopilot && (
+        <CfoCopilot snapshot={cfoSnapshot} onClose={() => setShowCfoCopilot(false)} />
       )}
       {showChangePass && (
         <ChangePasswordModal user={currentUser} onClose={() => setShowChangePass(false)} onSave={changeMyPassword} setToast={setToast} />

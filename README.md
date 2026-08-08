@@ -39,6 +39,35 @@ npm run build
 
 Isso cria a pasta `dist/` com o site pronto.
 
+### CFO Copilot v1
+
+O protótipo inclui um CFO Copilot opcional no Radar. A interface envia somente uma
+fotografia financeira agregada (indicadores, metas e alertas gerenciais) para
+`POST /api/cfo`; o extrato bruto e as descrições individuais das transações não
+fazem parte do payload.
+
+Para usar a IA, configure `OPENAI_API_KEY` **somente no ambiente do servidor**.
+Nunca use prefixo `VITE_` nessa chave, pois variáveis `VITE_*` são expostas ao
+navegador. No desenvolvimento, o próprio Vite expõe o endpoint `/api/cfo`; na
+Vercel, `api/cfo.js` funciona como Node Function.
+
+Verificações disponíveis:
+
+```bash
+npm test
+npm run build
+npm run smoke:cfo   # requer OPENAI_API_KEY com créditos de API
+```
+
+O modelo não executa pagamentos nem altera dados. Os cálculos financeiros ficam
+no motor determinístico do Meton; o agente prioriza e explica as decisões com base
+nesses números. O tracing do Agents SDK fica desativado nesta v1 para não duplicar
+o snapshot financeiro em traces de execução.
+
+> **Antes de produção:** o login atual vive no navegador e não autentica a Function
+> no servidor. Não habilite uma chave paga em um endpoint público sem adicionar
+> autenticação server-side e rate limiting, ou terceiros poderão consumir a cota da API.
+
 ---
 
 ## Publicar na internet (passo a passo, sem terminal)
