@@ -2,8 +2,33 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 
+function fixMetonStableHooks() {
+  return {
+    name: "fix-meton-stable-hooks",
+    enforce: "pre",
+    transform(code, id) {
+      if (!id.replace(/\\/g, "/").endsWith("/src/MetonStable.jsx")) return null;
+
+      let next = code.replace(
+        "import React,{useEffect,useMemo,useState}from'react';",
+        "import React,{useEffect,useState}from'react';"
+      );
+      next = next.replace(
+        "const ctrl=useMemo(()=>calcController(data,balance,income,expense,result),[data,balance,income,expense,result]);",
+        "const ctrl=calcController(data,balance,income,expense,result);"
+      );
+
+      if (next === code) {
+        throw new Error("MetonStable hook patch was not applied; aborting build to avoid publishing a blank-screen regression.");
+      }
+      return { code: next, map: null };
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
+    fixMetonStableHooks(),
     react(),
     VitePWA({
       registerType: "autoUpdate",
@@ -27,12 +52,13 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // aumenta o limite para o bundle do app (~670kb)
         maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         globPatterns: ["**/*.{js,css,html,ico,png,svg,woff,woff2}"],
+        cleanupOutdatedCaches: true,
+        skipWaiting: true,
+        clientsClaim: true,
         runtimeCaching: [
           {
-            // fontes do Google: cacheia para funcionar offline
             urlPattern: /^https:\/\/fonts\.(googleapis|gstatic)\.com\/.*/i,
             handler: "CacheFirst",
             options: {
