@@ -1,7 +1,7 @@
 {
   "name": "meton-financeira",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
     "lucide-react": "0.383.0",
     "papaparse": "5.4.1",
     "react": "18.3.1",
