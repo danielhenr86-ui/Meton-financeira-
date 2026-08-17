@@ -1,11 +1,9 @@
+import { createClient } from '@supabase/supabase-js';
+
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://qhqqlyvgtmekngnrtbel.supabase.co';
 const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY || 'sb_publishable_rzUUuLcv-HW8jiDVeqV52w_BfxAXaLg';
 
-if (!window.supabase?.createClient) {
-  throw new Error('Supabase SDK não carregado.');
-}
-
-export const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+export const supabase = createClient(SUPABASE_URL, SUPABASE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });
 
@@ -15,24 +13,30 @@ let reloadTimer = null;
 function legacyKeys() {
   const PFX = 'meton::';
   const rows = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const k = localStorage.key(i);
-    if (k?.startsWith(PFX) && k !== `${PFX}cloud-migrated`) {
-      rows.push({ key: k.slice(PFX.length), value: localStorage.getItem(k) ?? '' });
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k?.startsWith(PFX) && k !== `${PFX}cloud-migrated`) {
+        rows.push({ key: k.slice(PFX.length), value: localStorage.getItem(k) ?? '' });
+      }
     }
+  } catch (error) {
+    console.warn('Armazenamento local indisponível; seguindo apenas com nuvem.', error);
   }
   return rows;
 }
 
 async function migrateLegacyData(userId) {
-  if (localStorage.getItem('meton::cloud-migrated') === userId) return;
+  try {
+    if (localStorage.getItem('meton::cloud-migrated') === userId) return;
+  } catch (_) {}
   const rows = legacyKeys();
   if (rows.length) {
     const payload = rows.map((r) => ({ user_id: userId, key: r.key, value: r.value, updated_at: new Date().toISOString() }));
     const { error } = await supabase.from('meton_kv').upsert(payload, { onConflict: 'user_id,key', ignoreDuplicates: true });
     if (error) throw error;
   }
-  localStorage.setItem('meton::cloud-migrated', userId);
+  try { localStorage.setItem('meton::cloud-migrated', userId); } catch (_) {}
 }
 
 export async function initCloudStorage(userId) {
