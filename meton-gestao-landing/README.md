@@ -1,8 +1,8 @@
-# MetOn Gestão — Landing Page Snapshot
+# MetOn Gestão — Landing Page
 
-Cópia da landing page MetOn Gestão exportada do projeto Floot em 26/08/2026.
+Cópia versionada da landing MetOn Gestão, com fonte original do projeto Floot e uma versão standalone responsiva pronta para preview/deploy.
 
-Este diretório preserva os arquivos específicos da landing atual:
+## Snapshot do projeto Floot
 
 - `pages/_index.tsx`
 - `pages/_index.module.css`
@@ -10,6 +10,15 @@ Este diretório preserva os arquivos específicos da landing atual:
 - `components/FeatureCatalog.module.css`
 - `base.css`
 
-A página utiliza componentes padrão do projeto Floot (`Button`, `Accordion`) e o helper `useScrollReveal`, além de `lucide-react`, React e Radix UI. O objetivo desta pasta é manter um snapshot versionado da landing no GitHub sem interferir no aplicativo Meton Financeira existente.
+## Versão standalone responsiva
 
-Contato configurado na landing: WhatsApp `(62) 99473-8787` e Instagram `@metoninteligencia`.
+A versão independente está em:
+
+- `public/meton-gestao/index.html`
+- `public/meton-gestao/styles.css`
+
+Ela não depende de React para renderizar e foi estruturada para desktop, tablet e celular, com breakpoints responsivos, accordions nativos, planos, catálogo de funcionalidades e CTA fixo de WhatsApp no mobile.
+
+No projeto Vite/Vercel atual, a página é servida em `/meton-gestao/` nos deployments desta branch.
+
+Contato configurado: WhatsApp `(62) 99473-8787` e Instagram `@metoninteligencia`.
