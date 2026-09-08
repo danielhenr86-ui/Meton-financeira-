@@ -1,9 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://www.metongestao.com.br/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>
+  <url><loc>https://www.metongestao.com.br/</loc><changefreq>weekly</changefreq><priority>1</priority></url>
+  <url><loc>https://www.metongestao.com.br/solucoes/</loc><changefreq>monthly</changefreq><priority>0.9</priority></url>
+  <url><loc>https://www.metongestao.com.br/segmentos/</loc><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://www.metongestao.com.br/sistema-de-gestao-empresarial/</loc><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>https://www.metongestao.com.br/gestao-financeira-empresarial/</loc><changefreq>monthly</changefreq><priority>0.9</priority></url>
-  <url><loc>https://www.metongestao.com.br/dre-gerencial/</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
-  <url><loc>https://www.metongestao.com.br/gestao-de-estoque/</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
-  <url><loc>https://www.metongestao.com.br/ordem-de-servico/</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://www.metongestao.com.br/fluxo-de-caixa/</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>
+  <url><loc>https://www.metongestao.com.br/contas-a-pagar-e-receber/</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>
+  <url><loc>https://www.metongestao.com.br/conciliacao-bancaria/</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>
+  <url><loc>https://www.metongestao.com.br/dre-gerencial/</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>
+  <url><loc>https://www.metongestao.com.br/gestao-de-estoque/</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>
+  <url><loc>https://www.metongestao.com.br/ordem-de-servico/</loc><changefreq>monthly</changefreq><priority>0.85</priority></url>
+  <url><loc>https://www.metongestao.com.br/emissao-fiscal/</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>  <url><loc>https://www.metongestao.com.br/segmentos/comercio/</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://www.metongestao.com.br/segmentos/prestadores-de-servicos/</loc><changefreq>monthly</changefreq><priority>0.8</priority></url>
+  <url><loc>https://www.metongestao.com.br/segmentos/alimentacao/</loc><changefreq>monthly</changefreq><priority>0.75</priority></url>
+  <url><loc>https://www.metongestao.com.br/segmentos/distribuidores/</loc><changefreq>monthly</changefreq><priority>0.75</priority></url>
+  <url><loc>https://www.metongestao.com.br/gestao-empresarial-anapolis/</loc><changefreq>monthly</changefreq><priority>0.9</priority></url>
 </urlset>
