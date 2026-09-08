@@ -1,0 +1,15 @@
+{
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "metongestao.com.br"
+        }
+      ],
+      "destination": "https://www.metongestao.com.br/:path*",
+      "permanent": true
+    }
+  ]
+}
