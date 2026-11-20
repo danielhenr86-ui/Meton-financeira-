@@ -23,7 +23,9 @@ export async function parseBankFile(file,password=''){
  }
  if(ext==='pdf'){
   const pdfjs=await import('pdfjs-dist/build/pdf.mjs');
-  let pdf;try{pdf=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer()),password:password||undefined,disableWorker:true}).promise;}catch(e){if(e?.name==='PasswordException'||/password/i.test(String(e?.message||'')))throw Object.assign(new Error(password?'Senha incorreta. Verifique e tente novamente.':'Este PDF exige senha para leitura.'),{code:'PASSWORD_REQUIRED'});throw e;}
+  const workerUrl=(await import('pdfjs-dist/build/pdf.worker.min.mjs?url')).default;
+  pdfjs.GlobalWorkerOptions.workerSrc=workerUrl;
+  let pdf;try{pdf=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer()),password:password||undefined}).promise;}catch(e){if(e?.name==='PasswordException'||/password/i.test(String(e?.message||'')))throw Object.assign(new Error(password?'Senha incorreta. Verifique e tente novamente.':'Este PDF exige senha para leitura.'),{code:'PASSWORD_REQUIRED'});throw e;}
   const lines=[];for(let i=1;i<=Math.min(pdf.numPages,30);i++){const page=await pdf.getPage(i);const content=await page.getTextContent();let y=null,line=[];for(const item of content.items){if(!item.str)continue;const nextY=Math.round(item.transform?.[5]||0);if(y!==null&&Math.abs(y-nextY)>3){lines.push(line.join(' '));line=[]}line.push(item.str);y=nextY}if(line.length)lines.push(line.join(' '))}
   const rows=[];for(let i=0;i<lines.length;i++){const s=lines[i].trim();const m=s.match(/^(\d{2}[\/.-]\d{2}[\/.-]\d{4}|\d{4}-\d{2}-\d{2})\s+(.+?)\s+(-?\(?R?\$?\s*[\d.,]+\)?)\s*$/);if(!m)continue;const d=date(m[1]),amount=money(m[3]);if(d&&Number.isFinite(amount)&&amount!==0)rows.push({date:d,description:m[2],amount,line:i+1})}
   return{rows,errors:rows.length?[]:['PDF não reconhecido automaticamente. Extratos digitalizados ou com colunas complexas exigem revisão/conversão. Nenhum dado foi importado.'],meta:{format:'PDF (texto)',headerIndex:null}};
