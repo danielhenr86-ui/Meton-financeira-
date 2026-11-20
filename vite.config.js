@@ -10,7 +10,10 @@ function patchMetonStable() {
       if (!id.replace(/\\/g, "/").endsWith("/src/MetonStable.jsx")) return null;
       let next = code.replace("import React,{useEffect,useMemo,useState}from'react';","import React,{useEffect,useState}from'react';");
       next = next.replace("const ctrl=useMemo(()=>calcController(data,balance,income,expense,result),[data,balance,income,expense,result]);","const ctrl=calcController(data,balance,income,expense,result);");
-      next = next.replace("import'./stable.css';","import'./stable.css';\nimport{TransactionsV2,RemindersPage,ReportsV2,ReminderWatcher}from'./MetonControls.jsx';\nimport{CardsPageV2,LoansPage}from'./FinanceLiabilities.jsx';\nimport ImportPageV2 from'./ImportPageV2.jsx';\nimport RadarExecutive from'./RadarExecutive.jsx';\nimport AppQuickNav from'./AppQuickNav.jsx';\nimport AuditCompliance from'./AuditCompliance.jsx';");
+      next = next.replace("if(!session)return <Auth/>;","if(!session)return <Auth/>;if(new URLSearchParams(window.location.search).has('qr_approve'))return <QRApproval session={session}/>;");
+      next = next.replace("</button></form></div>}","</button><QRLogin/></form></div>}");
+
+      next = next.replace("import'./stable.css';","import'./stable.css';\nimport{QRLogin,QRApproval}from'./QRLogin.jsx';\nimport{TransactionsV2,RemindersPage,ReportsV2,ReminderWatcher}from'./MetonControls.jsx';\nimport{CardsPageV2,LoansPage}from'./FinanceLiabilities.jsx';\nimport ImportPageV2 from'./ImportPageV2.jsx';\nimport RadarExecutive from'./RadarExecutive.jsx';\nimport AppQuickNav from'./AppQuickNav.jsx';\nimport AuditCompliance from'./AuditCompliance.jsx';");
       // Insert menu entries at a stable anchor; the original menu includes conditional Growth items.
       next = next.replace("['controller',Bot,'Centro de Decisão'],...(growthAdmin?", "['cartoes',WalletCards,'Cartões'],['emprestimos',CircleDollarSign,'Empréstimos'],['auditoria',FileSpreadsheet,'Auditoria & conciliação'],['lembretes',AlertCircle,'Lembretes'],['controller',Bot,'Centro de Decisão'],...(growthAdmin?");
       next = next.replace("<div className=\"mn-app\"><ToastStack items={toasts}/>","<div className=\"mn-app\"><ReminderWatcher session={session}/><ToastStack items={toasts}/>");
@@ -23,7 +26,7 @@ function patchMetonStable() {
       next = next.replace("<div className=\"mn-decision\"onClick={()=>setPage('controller')}","<RadarExecutive tx={tx} balance={balance}/><div className=\"mn-decision\"onClick={()=>setPage('controller')}");
       next = next.replace("<small>{x.severity.toUpperCase()}</small>","<small>{{critical:'CRÍTICO',attention:'ATENÇÃO',info:'INFORMAÇÃO',opportunity:'OPORTUNIDADE'}[x.severity]||String(x.severity||'').toUpperCase()}</small>");
       next = next.replace("</header>{page==='radar'&&<Radar","</header><AppQuickNav page={page}setPage={setPage}/>{page==='radar'&&<Radar");
-      const required=["{page==='cartoes'&&<CardsPageV2","{page==='emprestimos'&&<LoansPage","{page==='auditoria'&&<AuditCompliance","{page==='lembretes'&&<RemindersPage","['cartoes',WalletCards,'Cartões']","TransactionsV2","CardsPageV2","LoansPage","AuditCompliance","RemindersPage","ReportsV2","ReminderWatcher","ImportPageV2","RadarExecutive","AppQuickNav","<AppQuickNav page={page}setPage={setPage}/>","<RadarExecutive tx={tx} balance={balance}/>","const ctrl=calcController","CRÍTICO","ATENÇÃO"];
+      const required=["<QRLogin/>","<QRApproval session={session}/> ","{page==='cartoes'&&<CardsPageV2","{page==='emprestimos'&&<LoansPage","{page==='auditoria'&&<AuditCompliance","{page==='lembretes'&&<RemindersPage","['cartoes',WalletCards,'Cartões']","TransactionsV2","CardsPageV2","LoansPage","AuditCompliance","RemindersPage","ReportsV2","ReminderWatcher","ImportPageV2","RadarExecutive","AppQuickNav","<AppQuickNav page={page}setPage={setPage}/>","<RadarExecutive tx={tx} balance={balance}/>","const ctrl=calcController","CRÍTICO","ATENÇÃO"];
       const missing=required.filter(token=>!next.includes(token));
       if(missing.length) throw new Error(`Meton production patch incomplete: ${missing.join(", ")}`);
       return {code:next,map:null};
