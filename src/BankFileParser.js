@@ -27,8 +27,20 @@ export async function parseBankFile(file,password=''){
   pdfjs.GlobalWorkerOptions.workerSrc=workerUrl;
   let pdf;try{pdf=await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer()),password:password||undefined}).promise;}catch(e){if(e?.name==='PasswordException'||/password/i.test(String(e?.message||'')))throw Object.assign(new Error(password?'Senha incorreta. Verifique e tente novamente.':'Este PDF exige senha para leitura.'),{code:'PASSWORD_REQUIRED'});throw e;}
   const lines=[];for(let i=1;i<=Math.min(pdf.numPages,30);i++){const page=await pdf.getPage(i);const content=await page.getTextContent();let y=null,line=[];for(const item of content.items){if(!item.str)continue;const nextY=Math.round(item.transform?.[5]||0);if(y!==null&&Math.abs(y-nextY)>3){lines.push(line.join(' '));line=[]}line.push(item.str);y=nextY}if(line.length)lines.push(line.join(' '))}
-  const rows=[];for(let i=0;i<lines.length;i++){const s=lines[i].trim();const m=s.match(/^(\d{2}[\/.-]\d{2}[\/.-]\d{4}|\d{4}-\d{2}-\d{2})\s+(.+?)\s+(-?\(?R?\$?\s*[\d.,]+\)?)\s*$/);if(!m)continue;const d=date(m[1]),amount=money(m[3]);if(d&&Number.isFinite(amount)&&amount!==0)rows.push({date:d,description:m[2],amount,line:i+1})}
-  return{rows,errors:rows.length?[]:['PDF não reconhecido automaticamente. Extratos digitalizados ou com colunas complexas exigem revisão/conversão. Nenhum dado foi importado.'],meta:{format:'PDF (texto)',headerIndex:null}};
+  // Only accept explicit credit/debit/balance columns; never infer a movement from the last value.
+  const rows=[];let rejected=0;
+  for(let i=0;i<lines.length;i++){
+   const s=lines[i].trim();
+   if(!/^\d{2}\/\d{2}\/\d{4}\s/.test(s))continue;
+   const m=s.match(/^(\d{2}\/\d{2}\/\d{4})\s+(.+?)\s+(\d[\d.]*,\d{2})\s+(\d[\d.]*,\d{2})\s+(-?\d[\d.]*,\d{2})$/);
+   if(!m){rejected++;continue;}
+   const cr=money(m[3]),db=money(m[4]);
+   if(!((cr>0&&db===0)||(db>0&&cr===0))){rejected++;continue;}
+   rows.push({date:date(m[1]),description:m[2]+' '+m[3]+'   '+m[4],amount:cr-db,line:i+1});
+  }
+  // Existing corrected imports have preserved raw descriptions; block PDF reimports until source identity is reconciled.
+  return {rows,errors:['Importação PDF temporariamente bloqueada para conferência de integridade e prevenção de duplicidades. Utilize OFX ou CSV.'],meta:{format:'PDF (prévia de crédito/débito)',headerIndex:null,rejected}};
+
  }
  if(ext==='csv'||ext==='txt'){
   const text=await decode(file);const candidates=[';',',','\t','|'];const lines=text.split(/\r?\n/).slice(0,8).join('\n');const delimiter=candidates.sort((a,b)=>lines.split(b).length-lines.split(a).length)[0];const matrix=Papa.parse(text,{delimiter,skipEmptyLines:'greedy'}).data;return parseMatrix(matrix,'CSV · '+(delimiter==='\t'?'TAB':delimiter));
